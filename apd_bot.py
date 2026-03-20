@@ -248,7 +248,7 @@ def scrape_ofertas():
     params = {
         "q": "*:*", "rows": "500", "sort": "finoferta asc",
         "wt": "json",
-        "fq": ["estado:publicada", "finoferta:[NOW TO *]"],
+        "fq": "finoferta:[NOW TO *]",
     }
     try:
         session = get_session()
@@ -539,7 +539,7 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
         params = {"q":"*:*","rows":"5","sort":"finoferta asc","wt":"json",
-                  "fq":["estado:publicada","finoferta:[NOW TO *]"]}
+                  "fq":"finoferta:[NOW TO *]"}
         resp = get_session().get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
         data  = resp.json()
@@ -575,7 +575,7 @@ async def ofertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Buscando ofertas activas según tu configuración...")
     try:
         params = {"q":"*:*","rows":"500","sort":"finoferta asc","wt":"json",
-                  "fq":["estado:publicada","finoferta:[NOW TO *]"]}
+                  "fq":"finoferta:[NOW TO *]"}
         resp = get_session().get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
         docs = resp.json().get("response",{}).get("docs",[])
