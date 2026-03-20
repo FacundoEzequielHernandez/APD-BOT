@@ -310,7 +310,25 @@ def formatear_fecha(fecha_str):
     except:
         return fecha_str
 
+def build_fq(nivel, distritos_list, cargos_list, estados_list):
+    """Construye filtros Solr para reducir resultados en la API."""
+    fq = ["finoferta:[NOW TO *]"]
+    if nivel != "Todos":
+        nivel_api = NIVELES_API.get(nivel, nivel.lower())
+        fq.append(f'descnivelmodalidad:"{nivel_api}"')
+    if distritos_list:
+        dist_query = " OR ".join(f'descdistrito:"{d}"' for d in distritos_list)
+        fq.append(f"({dist_query})")
+    if cargos_list:
+        cargo_query = " OR ".join(f'cargo:"{c}"' for c in cargos_list)
+        fq.append(f"({cargo_query})")
+    if estados_list:
+        estado_query = " OR ".join(f'estado:"{e}"' for e in estados_list)
+        fq.append(f"({estado_query})")
+    return fq
+
 def scrape_ofertas():
+    """Consulta la API Solr — sin filtros de usuario, para detectar nuevas."""
     params = {
         "q": "*:*", "rows": "500", "sort": "finoferta asc",
         "wt": "json",
@@ -338,6 +356,38 @@ def scrape_ofertas():
         return ofertas
     except Exception as e:
         logger.error(f"Scrape error: {e}"); return []
+
+def scrape_ofertas_filtradas(nivel, distritos_list, cargos_list, estados_list):
+    """Consulta la API con filtros Solr — para /ofertas."""
+    fq = build_fq(nivel, distritos_list, cargos_list, estados_list)
+    params = {
+        "q": "*:*", "rows": "100", "sort": "finoferta asc",
+        "wt": "json", "fq": fq,
+    }
+    try:
+        session = get_session()
+        resp = session.get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        docs  = data.get("response",{}).get("docs",[])
+        total = data.get("response",{}).get("numFound",0)
+        ofertas = []
+        for doc in docs:
+            o = {
+                "ige":             doc.get("ige","N/D"),
+                "nivel":           doc.get("descnivelmodalidad","N/D"),
+                "cargo":           doc.get("cargo","N/D"),
+                "distrito":        doc.get("descdistrito","N/D"),
+                "establecimiento": doc.get("descestablecimiento", doc.get("clave","N/D")),
+                "cierre":          formatear_fecha(doc.get("finoferta","N/D")),
+                "estado":          doc.get("estado","N/D"),
+                "link":            APD_URL,
+            }
+            o["id"] = hashlib.md5(f"{o['ige']}-{o['cargo']}-{o['distrito']}".encode()).hexdigest()
+            ofertas.append(o)
+        return ofertas, total
+    except Exception as e:
+        logger.error(f"Scrape filtrado error: {e}"); return [], 0
 
 def coincide(o, nivel, distritos_list, cargos_list, estados_list):
     nivel_o    = o.get("nivel","").lower().strip()
@@ -698,48 +748,26 @@ async def ofertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cargos_list    = csv_to_list(d["cargos"])
     estados_list   = csv_to_list(d["estados"])
     nivel          = d["nivel"]
-    await update.message.reply_text("🔍 Buscando ofertas activas según tu configuración...")
+    await update.message.reply_text("🔍 Buscando ofertas según tu configuración...")
     try:
-        params = {"q":"*:*","rows":"500","sort":"finoferta asc","wt":"json",
-                  "fq":"finoferta:[NOW TO *]"}
-        resp = get_session().get(APD_API, params=params, timeout=15)
-        resp.raise_for_status()
-        docs = resp.json().get("response",{}).get("docs",[])
-        coincidentes = [o for o in [
-            {
-                "ige":             doc.get("ige","N/D"),
-                "nivel":           doc.get("descnivelmodalidad","N/D"),
-                "cargo":           doc.get("cargo","N/D"),
-                "distrito":        doc.get("descdistrito","N/D"),
-                "establecimiento": doc.get("descestablecimiento", doc.get("clave","N/D")),
-                "cierre":          formatear_fecha(doc.get("finoferta","N/D")),
-                "estado":          doc.get("estado","N/D"),
-                "link":            APD_URL,
-            } for doc in docs
-        ] if coincide(o, nivel, distritos_list, cargos_list, estados_list)]
-
+        coincidentes, total = scrape_ofertas_filtradas(nivel, distritos_list, cargos_list, estados_list)
         if not coincidentes:
             await update.message.reply_text(
-                "📭 No hay ofertas activas que coincidan con tu configuración.\n\n"
+                f"📭 No hay ofertas que coincidan con tu configuración (total en sistema: {total}).\n\n"
                 "Podés cambiar los filtros con /configurar")
             return
-
         await update.message.reply_text(
-            f"📋 *{len(coincidentes)} oferta{'s' if len(coincidentes)!=1 else ''} activa{'s' if len(coincidentes)!=1 else ''}* "
-            f"según tu configuración:",
+            f"📋 *{total} oferta{'s' if total!=1 else ''}* coinciden con tu configuración"
+            f"{' (mostrando primeras 20)' if total > 20 else ''}:",
             parse_mode="Markdown")
-
-        # Enviar de a una, máximo 20 para no spamear
         for o in coincidentes[:20]:
             await update.message.reply_text(
                 fmt_oferta(o), parse_mode="Markdown", disable_web_page_preview=True)
             await asyncio.sleep(0.3)
-
-        if len(coincidentes) > 20:
+        if total > 20:
             await update.message.reply_text(
-                f"_...y {len(coincidentes)-20} ofertas más. Afinás los filtros con /configurar para ver menos resultados._",
+                f"_...y {total-20} ofertas más. Afinás los filtros con /configurar para ver menos resultados._",
                 parse_mode="Markdown")
-
     except Exception as e:
         await update.message.reply_text(f"❌ Error al consultar el portal:\n`{str(e)}`", parse_mode="Markdown")
 
