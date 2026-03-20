@@ -143,10 +143,15 @@ CARGOS_DISPLAY = {
     "director (xxd)":                "Director",
 }
 
-ESTADOS_OPCIONES = ["Publicadas", "Tomadas"]
-ESTADOS_API = {
-    "Publicadas": "publicada",
-    "Tomadas":    "designada",
+ESTADOS_OPCIONES = ["publicada", "designada", "desierta", "cerrada", "anulada", "renunciada", "finalizada"]
+ESTADOS_DISPLAY = {
+    "publicada":   "Publicada (disponible)",
+    "designada":   "Designada (tomada)",
+    "desierta":    "Desierta (sin postulantes)",
+    "cerrada":     "Cerrada",
+    "anulada":     "Anulada",
+    "renunciada":  "Renunciada",
+    "finalizada":  "Finalizada",
 }
 
 # ─────────────────────────────────────────────
@@ -270,9 +275,10 @@ def build_estado_keyboard(seleccionados):
     kb = []
     for e in ESTADOS_OPCIONES:
         tick = "✅ " if e in seleccionados else ""
-        kb.append([InlineKeyboardButton(f"{tick}{e}", callback_data=f"etog_{e}")])
+        label = ESTADOS_DISPLAY.get(e, e)
+        kb.append([InlineKeyboardButton(f"{tick}{label}", callback_data=f"etog_{e}")])
     n = len(seleccionados)
-    label = f"✓ Listo ({n} seleccionado{'s' if n!=1 else ''})" if n else "✓ Listo (Ambos)"
+    label = f"✓ Listo ({n} seleccionado{'s' if n!=1 else ''})" if n else "✓ Listo (Todos)"
     kb.append([InlineKeyboardButton(label, callback_data="estado_listo")])
     return InlineKeyboardMarkup(kb)
 
@@ -349,14 +355,9 @@ def coincide(o, nivel, distritos_list, cargos_list, estados_list):
         if not any(c.lower() == cargo_o for c in cargos_list):
             return False
 
-    # Estados: usar mapeo a valor API
+    # Estados: comparación directa con valor API
     if estados_list:
-        match = False
-        for e in estados_list:
-            estado_api = ESTADOS_API.get(e, e.lower())
-            if estado_api in estado_o:
-                match = True
-        if not match:
+        if estado_o not in [e.lower() for e in estados_list]:
             return False
 
     return True
@@ -428,7 +429,7 @@ async def mis_alertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏫 Nivel: {d['nivel']}\n"
         f"📍 Distritos: {', '.join(distritos) if distritos else 'Todos'}\n"
         f"📝 Cargos: {', '.join(cargos) if cargos else 'Todos'}\n"
-        f"🔖 Estados: {', '.join(estados) if estados else 'Ambos'}\n\n"
+        f"🔖 Estados: {', '.join(ESTADOS_DISPLAY.get(e,e) for e in estados) if estados else 'Todos'}\n\n"
         "Cambiá con /configurar", parse_mode="Markdown")
 
 # ── Paso 1: Nivel ──
@@ -586,7 +587,7 @@ async def cb_estado_listo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🏫 Nivel: {nivel}\n"
         f"📍 Distritos: {', '.join(distritos) if distritos else 'Todos'}\n"
         f"📝 Cargos: {', '.join(cargos) if cargos else 'Todos'}\n"
-        f"🔖 Estados: {', '.join(estados) if estados else 'Ambos'}\n\n"
+        f"🔖 Estados: {', '.join(ESTADOS_DISPLAY.get(e,e) for e in estados) if estados else 'Todos'}\n"
         "Te avisaré cuando aparezcan ofertas que coincidan.\n"
         "Los APD tienen cierres a las 7:30 y 10:30 hs (lunes a viernes).",
         parse_mode="Markdown")
@@ -631,6 +632,57 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         detalle = f"❌ *Error al conectar con el portal*\n\n`{str(e)}`"
     await update.message.reply_text(detalle, parse_mode="Markdown")
+
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = get_user(update.effective_user.id)
+    if not d:
+        await update.message.reply_text("Primero usá /start."); return
+
+    distritos_list = csv_to_list(d["distritos"])
+    cargos_list    = csv_to_list(d["cargos"])
+    estados_list   = csv_to_list(d["estados"])
+
+    await update.message.reply_text(
+        f"🔧 *Config en DB:*\n"
+        f"Nivel: `{d['nivel']}`\n"
+        f"Distritos: `{d['distritos'] or '(vacío=todos)'}`\n"
+        f"Cargos: `{d['cargos'] or '(vacío=todos)'}`\n"
+        f"Estados: `{d['estados'] or '(vacío=todos)'}`",
+        parse_mode="Markdown")
+
+    try:
+        params = {"q":"*:*","rows":"5","sort":"finoferta asc","wt":"json",
+                  "fq":"finoferta:[NOW TO *]"}
+        resp = get_session().get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        docs = resp.json().get("response",{}).get("docs",[])
+        total = resp.json().get("response",{}).get("numFound",0)
+
+        if not docs:
+            await update.message.reply_text("⚠️ La API no devolvió ofertas activas."); return
+
+        msg = f"📡 *API devuelve {total} ofertas activas. Primeras 5:*\n\n"
+        for doc in docs:
+            distrito_api = doc.get("descdistrito","")
+            cargo_api    = doc.get("cargo","")
+            nivel_api    = doc.get("descnivelmodalidad","")
+            estado_api   = doc.get("estado","")
+
+            # Simular coincide
+            o = {"nivel": nivel_api, "distrito": distrito_api,
+                 "cargo": cargo_api, "estado": estado_api}
+            match = coincide(o, d["nivel"], distritos_list, cargos_list, estados_list)
+
+            msg += (
+                f"{'✅' if match else '❌'} IGE {doc.get('ige','?')}\n"
+                f"  distrito=`{distrito_api}`\n"
+                f"  cargo=`{cargo_api[:40]}`\n"
+                f"  nivel=`{nivel_api}` estado=`{estado_api}`\n\n"
+            )
+
+        await update.message.reply_text(msg, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: `{e}`", parse_mode="Markdown")
 
 async def ofertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = get_user(update.effective_user.id)
@@ -685,6 +737,66 @@ async def ofertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Error al consultar el portal:\n`{str(e)}`", parse_mode="Markdown")
 
+async def debug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Diagnóstico completo: config del usuario + lo que devuelve la API + filtros aplicados."""
+    d = get_user(update.effective_user.id)
+    if not d:
+        await update.message.reply_text("Primero usá /start."); return
+
+    distritos_list = csv_to_list(d["distritos"])
+    cargos_list    = csv_to_list(d["cargos"])
+    estados_list   = csv_to_list(d["estados"])
+    nivel          = d["nivel"]
+
+    msg = (
+        f"🔧 *DEBUG — Config guardada en DB:*\n"
+        f"nivel: `{repr(nivel)}`\n"
+        f"distritos raw: `{repr(d['distritos'])}`\n"
+        f"cargos raw: `{repr(d['cargos'])}`\n"
+        f"estados raw: `{repr(d['estados'])}`\n"
+        f"distritos list: `{distritos_list}`\n"
+        f"cargos list: `{cargos_list}`\n"
+        f"estados list: `{estados_list}`\n"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+    # Consultar API
+    try:
+        params = {"q":"*:*","rows":"5","sort":"finoferta asc","wt":"json",
+                  "fq":"finoferta:[NOW TO *]"}
+        resp = get_session().get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        data  = resp.json()
+        docs  = data.get("response",{}).get("docs",[])
+        total = data.get("response",{}).get("numFound",0)
+
+        msg2 = f"🌐 *API — Total con cierre futuro: `{total}`*\n\n"
+        for i, doc in enumerate(docs[:3]):
+            dist  = doc.get("descdistrito","?")
+            niv   = doc.get("descnivelmodalidad","?")
+            cargo = doc.get("cargo","?")
+            est   = doc.get("estado","?")
+            o = {
+                "nivel": niv, "distrito": dist,
+                "cargo": cargo, "estado": est,
+                "ige": doc.get("ige","?"),
+                "establecimiento": doc.get("descestablecimiento","?"),
+                "cierre": formatear_fecha(doc.get("finoferta","?")),
+                "link": APD_URL,
+            }
+            pasa = coincide(o, nivel, distritos_list, cargos_list, estados_list)
+            msg2 += (
+                f"*Oferta {i+1}:*\n"
+                f"  distrito: `{dist}`\n"
+                f"  nivel: `{niv}`\n"
+                f"  cargo: `{cargo}`\n"
+                f"  estado: `{est}`\n"
+                f"  ¿pasa filtro?: `{pasa}`\n\n"
+            )
+        await update.message.reply_text(msg2, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error API: `{e}`", parse_mode="Markdown")
+
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ *¿Cómo funciona?*\n\n"
@@ -710,6 +822,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("debug", debug))
     app.add_handler(CommandHandler("ofertas", ofertas))
     app.add_handler(CommandHandler("mis_alertas", mis_alertas))
     app.add_handler(CommandHandler("pausar", pausar))
