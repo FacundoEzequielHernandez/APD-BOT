@@ -60,42 +60,94 @@ DIST_POR_PAGINA = 16
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-NIVELES = ["Inicial","Primaria","Secundaria","Superior",
-           "Especial","Adultos","Artística","Técnica","Todos"]
+NIVELES_API = {
+    "Inicial":           "inicial",
+    "Primaria":          "primaria",
+    "Secundaria":        "secundaria",
+    "Técnico Prof.":     "tecnico profesional",
+    "Artística":         "artistica",
+    "Adultos/CENS":      "adultos y cens",
+    "Especial":          "especial",
+    "Ed. Física":        "educacion fisica",
+    "Psicología":        "psicologia",
+    "Superior":          "superior",
+    "Todos":             "Todos",
+}
+NIVELES = list(NIVELES_API.keys())
 
 DISTRITOS = [
-    "Adolfo Alsina","Adolfo Gonzales Chaves","Alberti","Almirante Brown","Azul",
-    "Bahía Blanca","Balcarce","Berazategui","Bolívar","Bragado","Campana",
-    "Cañuelas","Capitán Sarmiento","Carlos Casares","Carlos Tejedor","Carmen de Areco",
-    "Chascomús","Chivilcoy","Coronel Dorrego","Coronel Pringles","Coronel Rosales",
-    "Coronel Suárez","Daireaux","Dolores","Ensenada","Escobar","Esteban Echeverría",
-    "Exaltación de la Cruz","Ezeiza","Florencio Varela","General Alvarado",
-    "General Belgrano","General Guido","General Juan Madariaga","General La Madrid",
-    "General Las Heras","General Lavalle","General Paz","General Pinto",
-    "General Pueyrredón","General Rodríguez","General San Martín","General Viamonte",
-    "General Villegas","Guaminí","Hipólito Yrigoyen","Hurlingham","Ituzaingó",
-    "José C. Paz","Junín","La Costa","La Matanza","La Plata","Lanús","Laprida",
-    "Las Flores","Leandro N. Alem","Lincoln","Lobería","Lobos","Lomas de Zamora",
-    "Luján","Maipú","Malvinas Argentinas","Mar Chiquita","Marcos Paz","Mercedes",
-    "Merlo","Monte","Monte Hermoso","Moreno","Morón","Navarro","Necochea",
-    "Nueve de Julio","Olavarría","Patagones","Pehuajó","Pellegrini","Pergamino",
-    "Pila","Pilar","Pinamar","Presidente Perón","Puán","Punta Indio","Quilmes",
-    "Ramallo","Rauch","Rivadavia","Rojas","Roque Pérez","Saavedra","Saladillo",
-    "Salto","Salliqueló","San Andrés de Giles","San Antonio de Areco","San Cayetano",
-    "San Fernando","San Isidro","San Miguel","San Nicolás","San Pedro","San Vicente",
-    "Suipacha","Tandil","Tapalqué","Tigre","Tordillo","Tornquist","Trenque Lauquen",
-    "Tres Arroyos","Tres de Febrero","Tres Lomas","Vicente López","Villa Gesell",
-    "Villarino","Zárate",
+    "adolfo alsina","adolfo gonzales chaves","alberti","almirante brown","azul",
+    "bahia blanca","balcarce","berazategui","bolivar","bragado","campana",
+    "canuelas","capitan sarmiento","carlos casares","carlos tejedor","carmen de areco",
+    "chascomus","chivilcoy","coronel dorrego","coronel pringles","coronel rosales",
+    "coronel suarez","daireaux","dolores","ensenada","escobar","esteban echeverria",
+    "exaltacion de la cruz","ezeiza","florencio varela","general alvarado",
+    "general belgrano","general guido","general madariaga","general la madrid",
+    "general las heras","general lavalle","general paz","general pinto",
+    "general pueyrredon","general rodriguez","general san martin","general viamonte",
+    "general villegas","guamini","hipolito irigoyen","hurlingham","ituzaingo",
+    "jose c. paz","junin","partido de la costa","la matanza","la plata",
+    "lanus","laprida","las flores","leandro n alem","lincoln","loberia","lobos",
+    "lomas de zamora","lujan","maipu","malvinas argentinas","mar chiquita",
+    "marcos paz","mercedes","merlo","monte","monte hermoso","moreno","moron",
+    "navarro","necochea","9 de julio","olavarria","patagones","pehuajo",
+    "pellegrini","pergamino","pila","pilar","pinamar","presidente peron",
+    "puan","punta indio","quilmes","ramallo","rauch","rivadavia","rojas",
+    "roque perez","saavedra","saladillo","salto","salliquelo",
+    "san andres de giles","san antonio de areco","san cayetano","san fernando",
+    "san isidro","san miguel","san nicolas","san pedro","san vicente",
+    "suipacha","tandil","tapalque","tigre","tordillo","tornquist","trenque lauquen",
+    "tres arroyos","tres de febrero","tres lomas","vicente lopez","villa gesell",
+    "villarino","zarate",
 ]
+DISTRITOS_DISPLAY = [d.title() for d in DISTRITOS]
 
 CARGOS_COMUNES = [
-    "Maestro de grado","MG5 - Maestra grado 5ta hora","Maestro de jardín",
-    "Secretario","Director","Matemática","Lengua","Historia","Geografía",
-    "Inglés","Educación Física","Música","Plástica","Física","Química",
-    "Biología","Filosofía","Informática","Tecnología","Preceptor",
+    "maestro de grado (/mg)",
+    "jornada escolar de 25 horas- maestro de grado - [prog. res. 2502/22]  (mg5)",
+    "maestra de infantes (/mi)",
+    "preceptor (/pr)",
+    "ingles (igs)",
+    "prof. de c.e.f. (/ef)",
+    "educacion fisica (efc)",
+    "matematica (mtm)",
+    "practicas del lenguaje (plg)",
+    "historia (htr)",
+    "geografia (ggf)",
+    "biologia (blg)",
+    "filosofia (fia)",
+    "orientador educacional (/oe)",
+    "orientador social (/os)",
+    "fonoaudiologo (/fo)",
+    "bibliotecario (/bi)",
+    "director (xxd)",
 ]
+CARGOS_DISPLAY = {
+    "maestro de grado (/mg)":        "Maestro de grado",
+    "jornada escolar de 25 horas- maestro de grado - [prog. res. 2502/22]  (mg5)": "MG5 - Maestra grado 5ta hora",
+    "maestra de infantes (/mi)":     "Maestra de infantes",
+    "preceptor (/pr)":               "Preceptor",
+    "ingles (igs)":                  "Inglés",
+    "prof. de c.e.f. (/ef)":        "Ed. Física (EF)",
+    "educacion fisica (efc)":        "Ed. Física (EFC)",
+    "matematica (mtm)":              "Matemática",
+    "practicas del lenguaje (plg)":  "Prácticas del lenguaje",
+    "historia (htr)":                "Historia",
+    "geografia (ggf)":               "Geografía",
+    "biologia (blg)":                "Biología",
+    "filosofia (fia)":               "Filosofía",
+    "orientador educacional (/oe)":  "Orientador educacional",
+    "orientador social (/os)":       "Orientador social",
+    "fonoaudiologo (/fo)":           "Fonoaudiólogo",
+    "bibliotecario (/bi)":           "Bibliotecario",
+    "director (xxd)":                "Director",
+}
 
 ESTADOS_OPCIONES = ["Publicadas", "Tomadas"]
+ESTADOS_API = {
+    "Publicadas": "publicada",
+    "Tomadas":    "designada",
+}
 
 # ─────────────────────────────────────────────
 # BASE DE DATOS
@@ -178,12 +230,13 @@ def build_distrito_keyboard(pagina, seleccionados):
     inicio = pagina * DIST_POR_PAGINA
     fin    = inicio + DIST_POR_PAGINA
     chunk  = DISTRITOS[inicio:fin]
+    chunk_display = DISTRITOS_DISPLAY[inicio:fin]
     total_paginas = (len(DISTRITOS) + DIST_POR_PAGINA - 1) // DIST_POR_PAGINA
     kb = []
     row = []
-    for i, d in enumerate(chunk):
+    for i, (d, dd) in enumerate(zip(chunk, chunk_display)):
         tick = "✅ " if d in seleccionados else ""
-        row.append(InlineKeyboardButton(f"{tick}{d[:18]}", callback_data=f"dtog_{d}"))
+        row.append(InlineKeyboardButton(f"{tick}{dd[:18]}", callback_data=f"dtog_{d}"))
         if (i+1) % 2 == 0: kb.append(row); row = []
     if row: kb.append(row)
     nav = []
@@ -203,7 +256,8 @@ def build_cargo_keyboard(seleccionados):
     row = []
     for i, c in enumerate(CARGOS_COMUNES):
         tick = "✅ " if c in seleccionados else ""
-        row.append(InlineKeyboardButton(f"{tick}{c[:20]}", callback_data=f"ctog_{c}"))
+        label = CARGOS_DISPLAY.get(c, c)[:20]
+        row.append(InlineKeyboardButton(f"{tick}{label}", callback_data=f"ctog_{c}"))
         if (i+1) % 2 == 0: kb.append(row); row = []
     if row: kb.append(row)
     kb.append([InlineKeyboardButton("✏️ Escribir cargo personalizado", callback_data="cargo_custom")])
@@ -274,43 +328,36 @@ def scrape_ofertas():
         logger.error(f"Scrape error: {e}"); return []
 
 def coincide(o, nivel, distritos_list, cargos_list, estados_list):
-    nivel_o    = o.get("nivel","").lower()
-    distrito_o = o.get("distrito","").lower()
-    cargo_o    = o.get("cargo","").lower()
-    estado_o   = o.get("estado","").lower()
+    nivel_o    = o.get("nivel","").lower().strip()
+    distrito_o = o.get("distrito","").lower().strip()
+    cargo_o    = o.get("cargo","").lower().strip()
+    estado_o   = o.get("estado","").lower().strip()
 
-    # Nivel
-    if nivel != "Todos" and nivel.lower() not in nivel_o:
-        return False
+    # Nivel: comparación exacta contra valor API
+    if nivel != "Todos":
+        nivel_api = NIVELES_API.get(nivel, nivel.lower())
+        if nivel_api not in nivel_o:
+            return False
 
-    # Distritos: al menos uno debe estar contenido en el distrito de la oferta
+    # Distritos: matching exacto (los guardamos en minúsculas igual que la API)
     if distritos_list:
-        if not any(d.lower() in distrito_o for d in distritos_list):
+        if not any(d.lower() == distrito_o for d in distritos_list):
             return False
 
-    # Cargos: al menos uno debe estar contenido en el cargo de la oferta
-    # También chequeamos al revés: que el cargo de la oferta contenga alguna
-    # palabra clave del filtro (ej: "maestro de grado" está en "MAESTRO DE GRADO (/MG)")
+    # Cargos: matching exacto (los guardamos tal como los devuelve la API)
     if cargos_list:
-        def cargo_coincide(filtro, oferta):
-            f = filtro.lower()
-            # el filtro está dentro de la oferta
-            if f in oferta: return True
-            # o la oferta está dentro del filtro (para filtros más específicos)
-            if oferta in f: return True
-            # o comparten al menos 2 palabras significativas
-            palabras = [p for p in f.split() if len(p) > 3]
-            return any(p in oferta for p in palabras)
-        if not any(cargo_coincide(c, cargo_o) for c in cargos_list):
+        if not any(c.lower() == cargo_o for c in cargos_list):
             return False
 
-    # Estados: si hay lista, al menos uno debe coincidir
+    # Estados: usar mapeo a valor API
     if estados_list:
         match = False
         for e in estados_list:
-            if e == "Publicadas" and "publicad" in estado_o: match = True
-            if e == "Tomadas"    and "tomad"    in estado_o: match = True
-        if not match: return False
+            estado_api = ESTADOS_API.get(e, e.lower())
+            if estado_api in estado_o:
+                match = True
+        if not match:
+            return False
 
     return True
 
