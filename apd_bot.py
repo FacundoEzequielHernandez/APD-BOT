@@ -10,8 +10,25 @@ import hashlib
 from datetime import datetime, time
 from typing import Optional
 
+import ssl
 import requests
+from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
+
+class SSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = ssl.create_default_context()
+        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+def get_session():
+    s = requests.Session()
+    s.mount("https://", SSLAdapter())
+    s.mount("http://", SSLAdapter())
+    return s
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler,
@@ -195,7 +212,8 @@ def build_estado_keyboard():
 def scrape_ofertas():
     headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"es-AR,es;q=0.9"}
     try:
-        resp = requests.get(APD_URL, headers=headers, timeout=15, verify=False)
+        session = get_session()
+        resp = session.get(APD_URL, headers=headers, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
         return parse_html(soup)
     except Exception as e:
@@ -416,7 +434,8 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
         headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"es-AR,es;q=0.9"}
-        resp = requests.get(APD_URL, headers=headers, timeout=15, verify=False)
+        session = get_session()
+        resp = session.get(APD_URL, headers=headers, timeout=15)
         codigo = resp.status_code
         largo = len(resp.text)
         soup = BeautifulSoup(resp.text, "html.parser")
