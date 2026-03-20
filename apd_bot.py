@@ -211,13 +211,22 @@ def build_estado_keyboard():
 # ─────────────────────────────────────────────
 # SCRAPER
 # ─────────────────────────────────────────────
+def formatear_fecha(fecha_str):
+    """Convierte '2026-03-20T10:30:00Z' a '20/03/2026 10:30'"""
+    try:
+        dt = datetime.strptime(fecha_str, "%Y-%m-%dT%H:%M:%SZ")
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except:
+        return fecha_str
+
 def scrape_ofertas():
-    """Consulta la API Solr pública del portal APD y devuelve todas las ofertas activas."""
+    """Consulta la API Solr pública del portal APD, ofertas publicadas con cierre futuro."""
     params = {
         "q": "*:*",
         "rows": "500",
-        "sort": "finoferta desc",
+        "sort": "finoferta asc",
         "wt": "json",
+        "fq": ["estado:publicada", "finoferta:[NOW TO *]"],
     }
     try:
         session = get_session()
@@ -233,7 +242,7 @@ def scrape_ofertas():
                 "cargo":           doc.get("cargo", "N/D"),
                 "distrito":        doc.get("descdistrito", "N/D"),
                 "establecimiento": doc.get("descestablecimiento", doc.get("clave", "N/D")),
-                "cierre":          doc.get("finoferta", "N/D"),
+                "cierre":          formatear_fecha(doc.get("finoferta", "N/D")),
                 "estado":          doc.get("estado", "N/D"),
                 "link":            APD_URL,
             }
@@ -436,7 +445,10 @@ async def reanudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
-        params = {"q": "*:*", "rows": "5", "sort": "finoferta desc", "wt": "json"}
+        params = {
+            "q": "*:*", "rows": "5", "sort": "finoferta asc", "wt": "json",
+            "fq": ["estado:publicada", "finoferta:[NOW TO *]"],
+        }
         session = get_session()
         resp = session.get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
@@ -448,17 +460,17 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
             detalle = (
                 f"✅ *API respondió correctamente*\n\n"
                 f"📊 Código HTTP: `{resp.status_code}`\n"
-                f"📋 Total ofertas en el sistema: `{total}`\n\n"
-                f"*Oferta más reciente:*\n"
+                f"📋 Ofertas publicadas activas: `{total}`\n\n"
+                f"*Próxima en cerrar:*\n"
                 f"IGE: `{muestra.get('ige','N/D')}`\n"
                 f"Nivel: {muestra.get('descnivelmodalidad','N/D')}\n"
                 f"Cargo: {muestra.get('cargo','N/D')}\n"
                 f"Distrito: {muestra.get('descdistrito','N/D')}\n"
                 f"Estado: {muestra.get('estado','N/D')}\n"
-                f"Cierre: {muestra.get('finoferta','N/D')}"
+                f"Cierre: {formatear_fecha(muestra.get('finoferta','N/D'))}"
             )
         else:
-            detalle = f"⚠️ API respondió pero sin ofertas. Total: `{total}`"
+            detalle = "⚠️ No hay ofertas publicadas activas en este momento."
     except Exception as e:
         detalle = f"❌ *Error al conectar con el portal*\n\n`{str(e)}`"
     await update.message.reply_text(detalle, parse_mode="Markdown")
