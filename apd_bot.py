@@ -1,5 +1,5 @@
 """
-APD Notificaciones Bot v2 - Con paginación de distritos, cargos y filtro de estado
+APD Notificaciones Bot v3 - Selección múltiple de distritos, cargos y estados
 """
 
 import asyncio
@@ -7,15 +7,22 @@ import logging
 import os
 import sqlite3
 import hashlib
-from datetime import datetime, time
-from typing import Optional
-
 import ssl
+from datetime import datetime, time
+
 import requests
 from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
 from urllib3.util.ssl_ import create_urllib3_context
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CallbackQueryHandler, CommandHandler,
+    ContextTypes, ConversationHandler, MessageHandler, filters,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# ─────────────────────────────────────────────
+# SSL para servidores del gobierno
+# ─────────────────────────────────────────────
 class SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         ctx = create_urllib3_context()
@@ -30,12 +37,6 @@ def get_session():
     s.mount("https://", SSLAdapter())
     s.mount("http://", SSLAdapter())
     return s
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CallbackQueryHandler, CommandHandler,
-    ContextTypes, ConversationHandler, MessageHandler, filters,
-)
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
@@ -51,13 +52,16 @@ HORA_FIN    = time(11, 30)
 APD_URL     = "http://servicios.abc.gov.ar/actos.publicos.digitales/"
 APD_API     = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
 
-ELIGIENDO_NIVEL, ELIGIENDO_DISTRITO, ELIGIENDO_CARGO, ELIGIENDO_ESTADO = range(4)
+(ELIGIENDO_NIVEL, ELIGIENDO_DISTRITO, ELIGIENDO_CARGO,
+ ELIGIENDO_CARGO_CUSTOM, ELIGIENDO_ESTADO) = range(5)
+
 DIST_POR_PAGINA = 16
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-NIVELES = ["Inicial","Primaria","Secundaria","Superior","Especial","Adultos","Artística","Técnica","Todos"]
+NIVELES = ["Inicial","Primaria","Secundaria","Superior",
+           "Especial","Adultos","Artística","Técnica","Todos"]
 
 DISTRITOS = [
     "Adolfo Alsina","Adolfo Gonzales Chaves","Alberti","Almirante Brown","Azul",
@@ -81,18 +85,17 @@ DISTRITOS = [
     "San Fernando","San Isidro","San Miguel","San Nicolás","San Pedro","San Vicente",
     "Suipacha","Tandil","Tapalqué","Tigre","Tordillo","Tornquist","Trenque Lauquen",
     "Tres Arroyos","Tres de Febrero","Tres Lomas","Vicente López","Villa Gesell",
-    "Villarino","Zárate","Todos"
+    "Villarino","Zárate",
 ]
 
 CARGOS_COMUNES = [
-    "Maestro de grado","MG5 - Maestra grado 5ta hora","Maestro de jardín","Secretario","Director",
-    "Matemática","Lengua","Historia","Geografía",
-    "Inglés","Educación Física","Música","Plástica",
-    "Física","Química","Biología","Filosofía",
-    "Informática","Tecnología","Preceptor","Otro (escribir)",
+    "Maestro de grado","MG5 - Maestra grado 5ta hora","Maestro de jardín",
+    "Secretario","Director","Matemática","Lengua","Historia","Geografía",
+    "Inglés","Educación Física","Música","Plástica","Física","Química",
+    "Biología","Filosofía","Informática","Tecnología","Preceptor",
 ]
 
-ESTADOS = ["Publicadas", "Tomadas", "Ambas"]
+ESTADOS_OPCIONES = ["Publicadas", "Tomadas"]
 
 # ─────────────────────────────────────────────
 # BASE DE DATOS
@@ -102,15 +105,18 @@ def init_db():
     c = conn.cursor()
     c.execute("""CREATE TABLE IF NOT EXISTS usuarios (
         chat_id INTEGER PRIMARY KEY, username TEXT,
-        nivel TEXT DEFAULT 'Todos', distrito TEXT DEFAULT 'Todos',
-        cargo TEXT DEFAULT '', estado TEXT DEFAULT 'Publicadas',
+        nivel TEXT DEFAULT 'Todos',
+        distritos TEXT DEFAULT '',
+        cargos TEXT DEFAULT '',
+        estados TEXT DEFAULT 'Publicadas',
         activo INTEGER DEFAULT 1,
         creado_en TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    # Agregar columna estado si no existe (para bases de datos previas)
-    try:
-        c.execute("ALTER TABLE usuarios ADD COLUMN estado TEXT DEFAULT 'Publicadas'")
-    except:
-        pass
+    # Migraciones para bases anteriores
+    for col, default in [("distritos","''"),("cargos","''"),("estados","'Publicadas'")]:
+        try:
+            c.execute(f"ALTER TABLE usuarios ADD COLUMN {col} TEXT DEFAULT {default}")
+        except:
+            pass
     c.execute("""CREATE TABLE IF NOT EXISTS ofertas_vistas (
         oferta_id TEXT PRIMARY KEY, visto_en TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.commit(); conn.close()
@@ -118,15 +124,12 @@ def init_db():
 def get_user(chat_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT * FROM usuarios WHERE chat_id=?", (chat_id,))
+    c.execute("SELECT chat_id,username,nivel,distritos,cargos,estados,activo FROM usuarios WHERE chat_id=?", (chat_id,))
     row = c.fetchone(); conn.close()
     if row:
-        return {
-            "chat_id": row[0], "username": row[1], "nivel": row[2],
-            "distrito": row[3], "cargo": row[4],
-            "estado": row[5] if len(row) > 5 else "Publicadas",
-            "activo": row[6] if len(row) > 6 else row[5]
-        }
+        return {"chat_id":row[0],"username":row[1],"nivel":row[2],
+                "distritos":row[3] or "","cargos":row[4] or "",
+                "estados":row[5] or "Publicadas","activo":row[6]}
     return None
 
 def upsert_user(chat_id, username=None, **kwargs):
@@ -143,7 +146,7 @@ def upsert_user(chat_id, username=None, **kwargs):
 def get_all_active_users():
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
-        "SELECT chat_id, nivel, distrito, cargo, COALESCE(estado,'Publicadas') FROM usuarios WHERE activo=1"
+        "SELECT chat_id,nivel,distritos,cargos,COALESCE(estados,'Publicadas') FROM usuarios WHERE activo=1"
     ).fetchall()
     conn.close(); return rows
 
@@ -158,61 +161,83 @@ def es_nueva(oid):
     conn.close(); return r is None
 
 # ─────────────────────────────────────────────
-# TECLADO DE DISTRITOS CON PAGINACIÓN
+# HELPERS listas guardadas como CSV
 # ─────────────────────────────────────────────
-def build_distrito_keyboard(pagina: int):
-    inicio = pagina * DIST_POR_PAGINA
-    fin = inicio + DIST_POR_PAGINA
-    chunk = DISTRITOS[inicio:fin]
-    total_paginas = (len(DISTRITOS) + DIST_POR_PAGINA - 1) // DIST_POR_PAGINA
+def csv_to_list(s): return [x.strip() for x in s.split(",") if x.strip()]
+def list_to_csv(lst): return ",".join(lst)
 
+def resumen_lista(lst, vacio="Todos"):
+    if not lst: return vacio
+    if len(lst) == 1: return lst[0]
+    return f"{lst[0]} +{len(lst)-1} más"
+
+# ─────────────────────────────────────────────
+# TECLADOS CON CHECKBOXES
+# ─────────────────────────────────────────────
+def build_distrito_keyboard(pagina, seleccionados):
+    inicio = pagina * DIST_POR_PAGINA
+    fin    = inicio + DIST_POR_PAGINA
+    chunk  = DISTRITOS[inicio:fin]
+    total_paginas = (len(DISTRITOS) + DIST_POR_PAGINA - 1) // DIST_POR_PAGINA
     kb = []
     row = []
     for i, d in enumerate(chunk):
-        row.append(InlineKeyboardButton(d[:20], callback_data=f"dist_{d}"))
-        if (i + 1) % 2 == 0:
-            kb.append(row); row = []
-    if row:
-        kb.append(row)
-
-    # Fila de navegación
+        tick = "✅ " if d in seleccionados else ""
+        row.append(InlineKeyboardButton(f"{tick}{d[:18]}", callback_data=f"dtog_{d}"))
+        if (i+1) % 2 == 0: kb.append(row); row = []
+    if row: kb.append(row)
     nav = []
     if pagina > 0:
-        nav.append(InlineKeyboardButton("◀ Anterior", callback_data=f"distpag_{pagina-1}"))
-    nav.append(InlineKeyboardButton(f"{pagina+1}/{total_paginas}", callback_data="distpag_noop"))
+        nav.append(InlineKeyboardButton("◀", callback_data=f"dpag_{pagina-1}"))
+    nav.append(InlineKeyboardButton(f"{pagina+1}/{total_paginas}", callback_data="dpag_noop"))
     if fin < len(DISTRITOS):
-        nav.append(InlineKeyboardButton("Siguiente ▶", callback_data=f"distpag_{pagina+1}"))
+        nav.append(InlineKeyboardButton("▶", callback_data=f"dpag_{pagina+1}"))
     kb.append(nav)
-
+    n = len(seleccionados)
+    label = f"✓ Listo ({n} seleccionado{'s' if n!=1 else ''})" if n else "✓ Listo (Todos)"
+    kb.append([InlineKeyboardButton(label, callback_data="dist_listo")])
     return InlineKeyboardMarkup(kb)
 
-# ─────────────────────────────────────────────
-# TECLADO DE CARGOS
-# ─────────────────────────────────────────────
-def build_cargo_keyboard():
+def build_cargo_keyboard(seleccionados):
     kb = []
     row = []
     for i, c in enumerate(CARGOS_COMUNES):
-        row.append(InlineKeyboardButton(c, callback_data=f"cargo_{c}"))
-        if (i + 1) % 2 == 0:
-            kb.append(row); row = []
-    if row:
-        kb.append(row)
-    kb.append([InlineKeyboardButton("📋 Todos los cargos", callback_data="cargo_Todos")])
+        tick = "✅ " if c in seleccionados else ""
+        row.append(InlineKeyboardButton(f"{tick}{c[:20]}", callback_data=f"ctog_{c}"))
+        if (i+1) % 2 == 0: kb.append(row); row = []
+    if row: kb.append(row)
+    kb.append([InlineKeyboardButton("✏️ Escribir cargo personalizado", callback_data="cargo_custom")])
+    n = len(seleccionados)
+    label = f"✓ Listo ({n} seleccionado{'s' if n!=1 else ''})" if n else "✓ Listo (Todos)"
+    kb.append([InlineKeyboardButton(label, callback_data="cargo_listo")])
     return InlineKeyboardMarkup(kb)
 
-# ─────────────────────────────────────────────
-# TECLADO DE ESTADO
-# ─────────────────────────────────────────────
-def build_estado_keyboard():
-    kb = [[InlineKeyboardButton(e, callback_data=f"estado_{e}")] for e in ESTADOS]
+def build_estado_keyboard(seleccionados):
+    kb = []
+    for e in ESTADOS_OPCIONES:
+        tick = "✅ " if e in seleccionados else ""
+        kb.append([InlineKeyboardButton(f"{tick}{e}", callback_data=f"etog_{e}")])
+    n = len(seleccionados)
+    label = f"✓ Listo ({n} seleccionado{'s' if n!=1 else ''})" if n else "✓ Listo (Ambos)"
+    kb.append([InlineKeyboardButton(label, callback_data="estado_listo")])
     return InlineKeyboardMarkup(kb)
+
+def texto_resumen(context):
+    nivel     = context.user_data.get("nivel","Todos")
+    distritos = context.user_data.get("sel_distritos",[])
+    cargos    = context.user_data.get("sel_cargos",[])
+    estados   = context.user_data.get("sel_estados",[])
+    return (
+        f"🏫 Nivel: *{nivel}*\n"
+        f"📍 Distritos: *{resumen_lista(distritos)}*\n"
+        f"📝 Cargos: *{resumen_lista(cargos)}*\n"
+        f"🔖 Estados: *{resumen_lista(estados,'Ambos')}*"
+    )
 
 # ─────────────────────────────────────────────
 # SCRAPER
 # ─────────────────────────────────────────────
 def formatear_fecha(fecha_str):
-    """Convierte '2026-03-20T10:30:00Z' a '20/03/2026 10:30'"""
     try:
         dt = datetime.strptime(fecha_str, "%Y-%m-%dT%H:%M:%SZ")
         return dt.strftime("%d/%m/%Y %H:%M")
@@ -220,11 +245,8 @@ def formatear_fecha(fecha_str):
         return fecha_str
 
 def scrape_ofertas():
-    """Consulta la API Solr pública del portal APD, ofertas publicadas con cierre futuro."""
     params = {
-        "q": "*:*",
-        "rows": "500",
-        "sort": "finoferta asc",
+        "q": "*:*", "rows": "500", "sort": "finoferta asc",
         "wt": "json",
         "fq": ["estado:publicada", "finoferta:[NOW TO *]"],
     }
@@ -232,18 +254,17 @@ def scrape_ofertas():
         session = get_session()
         resp = session.get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        docs = data.get("response", {}).get("docs", [])
+        docs = resp.json().get("response",{}).get("docs",[])
         ofertas = []
         for doc in docs:
             o = {
-                "ige":             doc.get("ige", "N/D"),
-                "nivel":           doc.get("descnivelmodalidad", "N/D"),
-                "cargo":           doc.get("cargo", "N/D"),
-                "distrito":        doc.get("descdistrito", "N/D"),
-                "establecimiento": doc.get("descestablecimiento", doc.get("clave", "N/D")),
-                "cierre":          formatear_fecha(doc.get("finoferta", "N/D")),
-                "estado":          doc.get("estado", "N/D"),
+                "ige":             doc.get("ige","N/D"),
+                "nivel":           doc.get("descnivelmodalidad","N/D"),
+                "cargo":           doc.get("cargo","N/D"),
+                "distrito":        doc.get("descdistrito","N/D"),
+                "establecimiento": doc.get("descestablecimiento", doc.get("clave","N/D")),
+                "cierre":          formatear_fecha(doc.get("finoferta","N/D")),
+                "estado":          doc.get("estado","N/D"),
                 "link":            APD_URL,
             }
             o["id"] = hashlib.md5(f"{o['ige']}-{o['cargo']}-{o['distrito']}".encode()).hexdigest()
@@ -252,20 +273,26 @@ def scrape_ofertas():
     except Exception as e:
         logger.error(f"Scrape error: {e}"); return []
 
-def coincide(o, nivel, distrito, cargo, estado_filtro):
+def coincide(o, nivel, distritos_list, cargos_list, estados_list):
+    # Nivel
     if nivel != "Todos" and nivel.lower() not in o.get("nivel","").lower():
         return False
-    if distrito != "Todos" and distrito.lower() not in o.get("distrito","").lower():
-        return False
-    if cargo and cargo != "Todos" and cargo.lower() not in o.get("cargo","").lower():
-        return False
-    # Filtro de estado
-    estado_oferta = o.get("estado","").lower()
-    if estado_filtro == "Publicadas" and "publicad" not in estado_oferta:
-        return False
-    if estado_filtro == "Tomadas" and "tomad" not in estado_oferta:
-        return False
-    # "Ambas" no filtra
+    # Distritos: si hay lista, la oferta debe coincidir con alguno
+    if distritos_list:
+        if not any(d.lower() in o.get("distrito","").lower() for d in distritos_list):
+            return False
+    # Cargos: si hay lista, la oferta debe coincidir con alguno
+    if cargos_list:
+        if not any(c.lower() in o.get("cargo","").lower() for c in cargos_list):
+            return False
+    # Estados: si hay lista, filtrar; si está vacía = ambos
+    if estados_list:
+        estado_o = o.get("estado","").lower()
+        match = False
+        for e in estados_list:
+            if e == "Publicadas" and "publicad" in estado_o: match = True
+            if e == "Tomadas"    and "tomad"    in estado_o: match = True
+        if not match: return False
     return True
 
 def fmt_oferta(o):
@@ -287,16 +314,18 @@ def fmt_oferta(o):
 # ─────────────────────────────────────────────
 async def chequear(application):
     ahora = datetime.now().time()
-    if not (HORA_INICIO <= ahora <= HORA_FIN):
-        return
+    if not (HORA_INICIO <= ahora <= HORA_FIN): return
     logger.info("Chequeando APD...")
     ofertas = scrape_ofertas()
-    nuevas = [o for o in ofertas if es_nueva(o["id"])]
+    nuevas  = [o for o in ofertas if es_nueva(o["id"])]
     if not nuevas: return
     for o in nuevas: mark_vista(o["id"])
-    for chat_id, nivel, distrito, cargo, estado_filtro in get_all_active_users():
+    for chat_id, nivel, distritos_csv, cargos_csv, estados_csv in get_all_active_users():
+        distritos_list = csv_to_list(distritos_csv)
+        cargos_list    = csv_to_list(cargos_csv)
+        estados_list   = csv_to_list(estados_csv)
         for o in nuevas:
-            if coincide(o, nivel, distrito, cargo, estado_filtro):
+            if coincide(o, nivel, distritos_list, cargos_list, estados_list):
                 try:
                     await application.bot.send_message(
                         chat_id=chat_id, text=fmt_oferta(o),
@@ -313,28 +342,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(chat_id=u.id, username=u.username or u.first_name)
     await update.message.reply_text(
         f"👋 Hola, *{u.first_name}*!\n\n"
-        "📢 Soy el bot de *Alertas APD*. Te aviso cuando salen nuevas ofertas "
-        "docentes del portal ABC de la Provincia de Buenos Aires.\n\n"
-        "Por defecto recibís *todas las ofertas publicadas*. Usá /configurar para filtrar.\n\n"
-        "📋 Comandos:\n/configurar · /mis\\_alertas · /pausar · /reanudar · /ayuda",
+        "📢 Soy el bot de *Alertas APD*. Te aviso cuando aparecen nuevas ofertas "
+        "docentes en el portal ABC de la Provincia de Buenos Aires.\n\n"
+        "Por defecto recibís *todas las ofertas publicadas*. "
+        "Usá /configurar para elegir distritos, cargos y estados.\n\n"
+        "📋 Comandos:\n/ofertas · /configurar · /mis\\_alertas · /pausar · /reanudar · /test · /ayuda",
         parse_mode="Markdown")
 
 async def mis_alertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = get_user(update.effective_user.id)
     if not d:
         await update.message.reply_text("Primero usá /start."); return
+    distritos = csv_to_list(d["distritos"])
+    cargos    = csv_to_list(d["cargos"])
+    estados   = csv_to_list(d["estados"])
     await update.message.reply_text(
         f"📋 *Tu configuración:*\n\n"
-        f"Estado: {'✅ Activo' if d['activo'] else '⏸️ Pausado'}\n"
+        f"Estado bot: {'✅ Activo' if d['activo'] else '⏸️ Pausado'}\n"
         f"🏫 Nivel: {d['nivel']}\n"
-        f"📍 Distrito: {d['distrito']}\n"
-        f"📝 Cargo: {d['cargo'] or 'Todos'}\n"
-        f"🔖 Estado oferta: {d.get('estado','Publicadas')}\n\n"
-        "Cambiá con /configurar",
-        parse_mode="Markdown")
+        f"📍 Distritos: {', '.join(distritos) if distritos else 'Todos'}\n"
+        f"📝 Cargos: {', '.join(cargos) if cargos else 'Todos'}\n"
+        f"🔖 Estados: {', '.join(estados) if estados else 'Ambos'}\n\n"
+        "Cambiá con /configurar", parse_mode="Markdown")
 
 # ── Paso 1: Nivel ──
 async def configurar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Cargar config previa como punto de partida
+    d = get_user(update.effective_user.id)
+    if d:
+        context.user_data["sel_distritos"] = csv_to_list(d["distritos"])
+        context.user_data["sel_cargos"]    = csv_to_list(d["cargos"])
+        context.user_data["sel_estados"]   = csv_to_list(d["estados"])
+    else:
+        context.user_data["sel_distritos"] = []
+        context.user_data["sel_cargos"]    = []
+        context.user_data["sel_estados"]   = []
     kb = []
     row = []
     for i, n in enumerate(NIVELES):
@@ -348,85 +390,136 @@ async def configurar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_nivel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    nivel = q.data.replace("nivel_","")
-    context.user_data["nivel"] = nivel
+    context.user_data["nivel"] = q.data.replace("nivel_","")
     context.user_data["dist_pagina"] = 0
+    sel = context.user_data.get("sel_distritos",[])
     await q.edit_message_text(
-        f"✅ Nivel: *{nivel}*\n\n📍 *Paso 2/4 — ¿En qué distrito?*",
-        reply_markup=build_distrito_keyboard(0), parse_mode="Markdown")
+        f"{texto_resumen(context)}\n\n"
+        "📍 *Paso 2/4 — Elegí uno o varios distritos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_distrito_keyboard(0, sel), parse_mode="Markdown")
     return ELIGIENDO_DISTRITO
 
-# ── Paso 2: Distrito con paginación ──
-async def cb_distpag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ── Paso 2: Distritos (multi) ──
+async def cb_dpag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    if q.data == "distpag_noop":
-        return ELIGIENDO_DISTRITO
-    pagina = int(q.data.replace("distpag_",""))
+    if q.data == "dpag_noop": return ELIGIENDO_DISTRITO
+    pagina = int(q.data.replace("dpag_",""))
     context.user_data["dist_pagina"] = pagina
-    nivel = context.user_data.get("nivel","Todos")
+    sel = context.user_data.get("sel_distritos",[])
     await q.edit_message_text(
-        f"✅ Nivel: *{nivel}*\n\n📍 *Paso 2/4 — ¿En qué distrito?*",
-        reply_markup=build_distrito_keyboard(pagina), parse_mode="Markdown")
+        f"{texto_resumen(context)}\n\n"
+        "📍 *Paso 2/4 — Elegí uno o varios distritos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_distrito_keyboard(pagina, sel), parse_mode="Markdown")
     return ELIGIENDO_DISTRITO
 
-async def cb_distrito(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cb_dtog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    distrito = q.data.replace("dist_","")
-    context.user_data["distrito"] = distrito
+    d = q.data.replace("dtog_","")
+    sel = context.user_data.get("sel_distritos",[])
+    if d in sel: sel.remove(d)
+    else: sel.append(d)
+    context.user_data["sel_distritos"] = sel
+    pagina = context.user_data.get("dist_pagina",0)
     await q.edit_message_text(
-        f"✅ Nivel: *{context.user_data['nivel']}*\n"
-        f"✅ Distrito: *{distrito}*\n\n"
-        "📝 *Paso 3/4 — ¿Qué cargo querés monitorear?*",
-        reply_markup=build_cargo_keyboard(), parse_mode="Markdown")
+        f"{texto_resumen(context)}\n\n"
+        "📍 *Paso 2/4 — Elegí uno o varios distritos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_distrito_keyboard(pagina, sel), parse_mode="Markdown")
+    return ELIGIENDO_DISTRITO
+
+async def cb_dist_listo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    sel = context.user_data.get("sel_cargos",[])
+    await q.edit_message_text(
+        f"{texto_resumen(context)}\n\n"
+        "📝 *Paso 3/4 — Elegí uno o varios cargos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_cargo_keyboard(sel), parse_mode="Markdown")
     return ELIGIENDO_CARGO
 
-# ── Paso 3: Cargo ──
-async def cb_cargo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ── Paso 3: Cargos (multi) ──
+async def cb_ctog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    cargo = q.data.replace("cargo_","")
-    if cargo == "Otro (escribir)":
-        await q.edit_message_text(
-            "✏️ Escribí el nombre del cargo que querés buscar:",
-            parse_mode="Markdown")
-        return ELIGIENDO_CARGO
-    context.user_data["cargo"] = "" if cargo == "Todos" else cargo
-    nivel = context.user_data.get("nivel","Todos")
-    distrito = context.user_data.get("distrito","Todos")
+    c = q.data.replace("ctog_","")
+    sel = context.user_data.get("sel_cargos",[])
+    if c in sel: sel.remove(c)
+    else: sel.append(c)
+    context.user_data["sel_cargos"] = sel
     await q.edit_message_text(
-        f"✅ Nivel: *{nivel}*\n✅ Distrito: *{distrito}*\n✅ Cargo: *{cargo}*\n\n"
-        "🔖 *Paso 4/4 — ¿Qué estado de oferta querés recibir?*",
-        reply_markup=build_estado_keyboard(), parse_mode="Markdown")
-    return ELIGIENDO_ESTADO
+        f"{texto_resumen(context)}\n\n"
+        "📝 *Paso 3/4 — Elegí uno o varios cargos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_cargo_keyboard(sel), parse_mode="Markdown")
+    return ELIGIENDO_CARGO
 
-async def recibir_cargo_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cargo = update.message.text.strip()
-    context.user_data["cargo"] = "" if cargo.lower() in ("no","todos","-","ninguno") else cargo
-    nivel = context.user_data.get("nivel","Todos")
-    distrito = context.user_data.get("distrito","Todos")
-    await update.message.reply_text(
-        f"✅ Nivel: *{nivel}*\n✅ Distrito: *{distrito}*\n✅ Cargo: *{cargo}*\n\n"
-        "🔖 *Paso 4/4 — ¿Qué estado de oferta querés recibir?*",
-        reply_markup=build_estado_keyboard(), parse_mode="Markdown")
-    return ELIGIENDO_ESTADO
-
-# ── Paso 4: Estado ──
-async def cb_estado(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cb_cargo_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    estado = q.data.replace("estado_","")
-    nivel = context.user_data.get("nivel","Todos")
-    distrito = context.user_data.get("distrito","Todos")
-    cargo = context.user_data.get("cargo","")
+    await q.edit_message_text(
+        "✏️ Escribí el nombre del cargo que querés agregar\n"
+        "_(ej: Orientador educacional, Fonoaudiología)_",
+        parse_mode="Markdown")
+    return ELIGIENDO_CARGO_CUSTOM
+
+async def recibir_cargo_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    texto = update.message.text.strip()
+    sel = context.user_data.get("sel_cargos",[])
+    if texto and texto not in sel:
+        sel.append(texto)
+    context.user_data["sel_cargos"] = sel
+    await update.message.reply_text(
+        f"{texto_resumen(context)}\n\n"
+        "📝 *Paso 3/4 — Elegí uno o varios cargos*\n"
+        "_Tocá para marcar/desmarcar. Sin selección = todos._",
+        reply_markup=build_cargo_keyboard(sel), parse_mode="Markdown")
+    return ELIGIENDO_CARGO
+
+async def cb_cargo_listo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    sel = context.user_data.get("sel_estados",[])
+    await q.edit_message_text(
+        f"{texto_resumen(context)}\n\n"
+        "🔖 *Paso 4/4 — ¿Qué estado de oferta querés recibir?*\n"
+        "_Sin selección = ambos._",
+        reply_markup=build_estado_keyboard(sel), parse_mode="Markdown")
+    return ELIGIENDO_ESTADO
+
+# ── Paso 4: Estados (multi) ──
+async def cb_etog(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    e = q.data.replace("etog_","")
+    sel = context.user_data.get("sel_estados",[])
+    if e in sel: sel.remove(e)
+    else: sel.append(e)
+    context.user_data["sel_estados"] = sel
+    await q.edit_message_text(
+        f"{texto_resumen(context)}\n\n"
+        "🔖 *Paso 4/4 — ¿Qué estado de oferta querés recibir?*\n"
+        "_Sin selección = ambos._",
+        reply_markup=build_estado_keyboard(sel), parse_mode="Markdown")
+    return ELIGIENDO_ESTADO
+
+async def cb_estado_listo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    nivel     = context.user_data.get("nivel","Todos")
+    distritos = context.user_data.get("sel_distritos",[])
+    cargos    = context.user_data.get("sel_cargos",[])
+    estados   = context.user_data.get("sel_estados",[])
     upsert_user(
         chat_id=update.effective_user.id,
-        nivel=nivel, distrito=distrito,
-        cargo=cargo, estado=estado, activo=1)
+        nivel=nivel,
+        distritos=list_to_csv(distritos),
+        cargos=list_to_csv(cargos),
+        estados=list_to_csv(estados),
+        activo=1)
     await q.edit_message_text(
         f"🎉 *¡Configuración guardada!*\n\n"
         f"🏫 Nivel: {nivel}\n"
-        f"📍 Distrito: {distrito}\n"
-        f"📝 Cargo: {cargo or 'Todos'}\n"
-        f"🔖 Estado: {estado}\n\n"
-        "Te avisaré cuando aparezcan ofertas que coincidan. "
+        f"📍 Distritos: {', '.join(distritos) if distritos else 'Todos'}\n"
+        f"📝 Cargos: {', '.join(cargos) if cargos else 'Todos'}\n"
+        f"🔖 Estados: {', '.join(estados) if estados else 'Ambos'}\n\n"
+        "Te avisaré cuando aparezcan ofertas que coincidan.\n"
         "Los APD tienen cierres a las 7:30 y 10:30 hs (lunes a viernes).",
         parse_mode="Markdown")
     return ConversationHandler.END
@@ -445,29 +538,25 @@ async def reanudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
-        params = {
-            "q": "*:*", "rows": "5", "sort": "finoferta asc", "wt": "json",
-            "fq": ["estado:publicada", "finoferta:[NOW TO *]"],
-        }
-        session = get_session()
-        resp = session.get(APD_API, params=params, timeout=15)
+        params = {"q":"*:*","rows":"5","sort":"finoferta asc","wt":"json",
+                  "fq":["estado:publicada","finoferta:[NOW TO *]"]}
+        resp = get_session().get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
-        data = resp.json()
-        docs = data.get("response", {}).get("docs", [])
-        total = data.get("response", {}).get("numFound", 0)
+        data  = resp.json()
+        docs  = data.get("response",{}).get("docs",[])
+        total = data.get("response",{}).get("numFound",0)
         if docs:
-            muestra = docs[0]
+            m = docs[0]
             detalle = (
                 f"✅ *API respondió correctamente*\n\n"
-                f"📊 Código HTTP: `{resp.status_code}`\n"
                 f"📋 Ofertas publicadas activas: `{total}`\n\n"
                 f"*Próxima en cerrar:*\n"
-                f"IGE: `{muestra.get('ige','N/D')}`\n"
-                f"Nivel: {muestra.get('descnivelmodalidad','N/D')}\n"
-                f"Cargo: {muestra.get('cargo','N/D')}\n"
-                f"Distrito: {muestra.get('descdistrito','N/D')}\n"
-                f"Estado: {muestra.get('estado','N/D')}\n"
-                f"Cierre: {formatear_fecha(muestra.get('finoferta','N/D'))}"
+                f"IGE: `{m.get('ige','N/D')}`\n"
+                f"Nivel: {m.get('descnivelmodalidad','N/D')}\n"
+                f"Cargo: {m.get('cargo','N/D')}\n"
+                f"Distrito: {m.get('descdistrito','N/D')}\n"
+                f"Estado: {m.get('estado','N/D')}\n"
+                f"Cierre: {formatear_fecha(m.get('finoferta','N/D'))}"
             )
         else:
             detalle = "⚠️ No hay ofertas publicadas activas en este momento."
@@ -475,18 +564,74 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         detalle = f"❌ *Error al conectar con el portal*\n\n`{str(e)}`"
     await update.message.reply_text(detalle, parse_mode="Markdown")
 
+async def ofertas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    d = get_user(update.effective_user.id)
+    if not d:
+        await update.message.reply_text("Primero usá /start."); return
+    distritos_list = csv_to_list(d["distritos"])
+    cargos_list    = csv_to_list(d["cargos"])
+    estados_list   = csv_to_list(d["estados"])
+    nivel          = d["nivel"]
+    await update.message.reply_text("🔍 Buscando ofertas activas según tu configuración...")
+    try:
+        params = {"q":"*:*","rows":"500","sort":"finoferta asc","wt":"json",
+                  "fq":["estado:publicada","finoferta:[NOW TO *]"]}
+        resp = get_session().get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        docs = resp.json().get("response",{}).get("docs",[])
+        coincidentes = [o for o in [
+            {
+                "ige":             doc.get("ige","N/D"),
+                "nivel":           doc.get("descnivelmodalidad","N/D"),
+                "cargo":           doc.get("cargo","N/D"),
+                "distrito":        doc.get("descdistrito","N/D"),
+                "establecimiento": doc.get("descestablecimiento", doc.get("clave","N/D")),
+                "cierre":          formatear_fecha(doc.get("finoferta","N/D")),
+                "estado":          doc.get("estado","N/D"),
+                "link":            APD_URL,
+            } for doc in docs
+        ] if coincide(o, nivel, distritos_list, cargos_list, estados_list)]
+
+        if not coincidentes:
+            await update.message.reply_text(
+                "📭 No hay ofertas activas que coincidan con tu configuración.\n\n"
+                "Podés cambiar los filtros con /configurar")
+            return
+
+        await update.message.reply_text(
+            f"📋 *{len(coincidentes)} oferta{'s' if len(coincidentes)!=1 else ''} activa{'s' if len(coincidentes)!=1 else ''}* "
+            f"según tu configuración:",
+            parse_mode="Markdown")
+
+        # Enviar de a una, máximo 20 para no spamear
+        for o in coincidentes[:20]:
+            await update.message.reply_text(
+                fmt_oferta(o), parse_mode="Markdown", disable_web_page_preview=True)
+            await asyncio.sleep(0.3)
+
+        if len(coincidentes) > 20:
+            await update.message.reply_text(
+                f"_...y {len(coincidentes)-20} ofertas más. Afinás los filtros con /configurar para ver menos resultados._",
+                parse_mode="Markdown")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error al consultar el portal:\n`{str(e)}`", parse_mode="Markdown")
+
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ *¿Cómo funciona?*\n\n"
-        "Chequeo el portal APD de la Provincia de Buenos Aires cada 5 minutos "
-        "entre las 5:30 y 11:30 hs (lunes a viernes) y te aviso al instante "
-        "cuando aparece una oferta que coincide con tus filtros.\n\n"
+        "Chequeo el portal APD cada 5 minutos entre las 5:30 y 11:30 hs "
+        "(lunes a viernes) y te aviso cuando aparece una oferta que coincide "
+        "con tus filtros.\n\n"
         "📋 *Comandos:*\n"
-        "/configurar — Cambiar nivel, distrito, cargo y estado\n"
+        "/ofertas — Ver ofertas activas ahora según tu config\n"
+        "/configurar — Elegir nivel, distritos, cargos y estados\n"
         "/mis\\_alertas — Ver tu configuración actual\n"
         "/pausar — Pausar notificaciones\n"
-        "/reanudar — Reanudar notificaciones\n\n"
-        "🔗 misservicios.abc.gob.ar", parse_mode="Markdown")
+        "/reanudar — Reanudar notificaciones\n"
+        "/test — Probar conexión con el portal\n\n"
+        "🔗 servicios.abc.gov.ar/actos.publicos.digitales",
+        parse_mode="Markdown")
 
 # ─────────────────────────────────────────────
 # MAIN
@@ -497,6 +642,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("test", test))
+    app.add_handler(CommandHandler("ofertas", ofertas))
     app.add_handler(CommandHandler("mis_alertas", mis_alertas))
     app.add_handler(CommandHandler("pausar", pausar))
     app.add_handler(CommandHandler("reanudar", reanudar))
@@ -508,15 +654,21 @@ def main():
                 CallbackQueryHandler(cb_nivel, pattern="^nivel_"),
             ],
             ELIGIENDO_DISTRITO: [
-                CallbackQueryHandler(cb_distpag, pattern="^distpag_"),
-                CallbackQueryHandler(cb_distrito, pattern="^dist_"),
+                CallbackQueryHandler(cb_dpag,      pattern="^dpag_"),
+                CallbackQueryHandler(cb_dtog,      pattern="^dtog_"),
+                CallbackQueryHandler(cb_dist_listo,pattern="^dist_listo$"),
             ],
             ELIGIENDO_CARGO: [
-                CallbackQueryHandler(cb_cargo, pattern="^cargo_"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cargo_texto),
+                CallbackQueryHandler(cb_ctog,       pattern="^ctog_"),
+                CallbackQueryHandler(cb_cargo_custom,pattern="^cargo_custom$"),
+                CallbackQueryHandler(cb_cargo_listo, pattern="^cargo_listo$"),
+            ],
+            ELIGIENDO_CARGO_CUSTOM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cargo_custom),
             ],
             ELIGIENDO_ESTADO: [
-                CallbackQueryHandler(cb_estado, pattern="^estado_"),
+                CallbackQueryHandler(cb_etog,        pattern="^etog_"),
+                CallbackQueryHandler(cb_estado_listo, pattern="^estado_listo$"),
             ],
         },
         fallbacks=[CommandHandler("cancelar", cancelar)],
@@ -526,7 +678,7 @@ def main():
     scheduler.add_job(chequear, "interval", minutes=SCRAPE_INTERVAL_MINUTES, args=[app])
     scheduler.start()
 
-    logger.info("Bot APD v2 corriendo...")
+    logger.info("Bot APD v3 corriendo...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
