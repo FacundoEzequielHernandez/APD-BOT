@@ -12,6 +12,24 @@ from typing import Optional
 
 import ssl
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+from urllib3.util.ssl_ import create_urllib3_context
+
+class SSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        ctx = create_urllib3_context()
+        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        kwargs["ssl_context"] = ctx
+        return super().init_poolmanager(*args, **kwargs)
+
+def get_session():
+    s = requests.Session()
+    s.mount("https://", SSLAdapter())
+    s.mount("http://", SSLAdapter())
+    return s
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler,
@@ -202,7 +220,8 @@ def scrape_ofertas():
         "wt": "json",
     }
     try:
-        resp = requests.get(APD_API, params=params, timeout=15)
+        session = get_session()
+        resp = session.get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         docs = data.get("response", {}).get("docs", [])
@@ -418,7 +437,8 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
         params = {"q": "*:*", "rows": "5", "sort": "finoferta desc", "wt": "json"}
-        resp = requests.get(APD_API, params=params, timeout=15)
+        session = get_session()
+        resp = session.get(APD_API, params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         docs = data.get("response", {}).get("docs", [])
