@@ -229,14 +229,14 @@ def resumen_lista(lst, vacio="Todos"):
 def build_distrito_keyboard(pagina, seleccionados):
     inicio = pagina * DIST_POR_PAGINA
     fin    = inicio + DIST_POR_PAGINA
-    chunk  = DISTRITOS[inicio:fin]
-    chunk_display = DISTRITOS_DISPLAY[inicio:fin]
+    chunk  = list(enumerate(DISTRITOS))[inicio:fin]
     total_paginas = (len(DISTRITOS) + DIST_POR_PAGINA - 1) // DIST_POR_PAGINA
     kb = []
     row = []
-    for i, (d, dd) in enumerate(zip(chunk, chunk_display)):
+    for i, (idx, d) in enumerate(chunk):
         tick = "✅ " if d in seleccionados else ""
-        row.append(InlineKeyboardButton(f"{tick}{dd[:18]}", callback_data=f"dtog_{d}"))
+        label = DISTRITOS_DISPLAY[idx][:18]
+        row.append(InlineKeyboardButton(f"{tick}{label}", callback_data=f"dtog_{idx}"))
         if (i+1) % 2 == 0: kb.append(row); row = []
     if row: kb.append(row)
     nav = []
@@ -257,7 +257,7 @@ def build_cargo_keyboard(seleccionados):
     for i, c in enumerate(CARGOS_COMUNES):
         tick = "✅ " if c in seleccionados else ""
         label = CARGOS_DISPLAY.get(c, c)[:20]
-        row.append(InlineKeyboardButton(f"{tick}{label}", callback_data=f"ctog_{c}"))
+        row.append(InlineKeyboardButton(f"{tick}{label}", callback_data=f"ctog_{i}"))
         if (i+1) % 2 == 0: kb.append(row); row = []
     if row: kb.append(row)
     kb.append([InlineKeyboardButton("✏️ Escribir cargo personalizado", callback_data="cargo_custom")])
@@ -482,7 +482,8 @@ async def cb_dpag(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_dtog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    d = q.data.replace("dtog_","")
+    idx = int(q.data.replace("dtog_",""))
+    d = DISTRITOS[idx]
     sel = context.user_data.get("sel_distritos",[])
     if d in sel: sel.remove(d)
     else: sel.append(d)
@@ -508,7 +509,8 @@ async def cb_dist_listo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── Paso 3: Cargos (multi) ──
 async def cb_ctog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    c = q.data.replace("ctog_","")
+    idx = int(q.data.replace("ctog_",""))
+    c = CARGOS_COMUNES[idx]
     sel = context.user_data.get("sel_cargos",[])
     if c in sel: sel.remove(c)
     else: sel.append(c)
