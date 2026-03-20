@@ -347,13 +347,13 @@ def consultar_api(fq, rows=100, sort="finoferta asc"):
 
 def doc_to_oferta(doc):
     return {
-        "ige":             doc.get("ige","N/D"),
-        "nivel":           doc.get("descnivelmodalidad","N/D"),
-        "cargo":           doc.get("cargo","N/D"),
-        "distrito":        doc.get("descdistrito","N/D"),
-        "establecimiento": doc.get("descestablecimiento", doc.get("clave","N/D")),
-        "cierre":          formatear_fecha(doc.get("finoferta","N/D")),
-        "estado":          doc.get("estado","N/D"),
+        "ige":             str(doc.get("ige","N/D")),
+        "nivel":           str(doc.get("descnivelmodalidad","N/D")),
+        "cargo":           str(doc.get("cargo","N/D")),
+        "distrito":        str(doc.get("descdistrito","N/D")),
+        "establecimiento": str(doc.get("descestablecimiento", doc.get("clave","N/D"))),
+        "cierre":          formatear_fecha(str(doc.get("finoferta","N/D"))),
+        "estado":          str(doc.get("estado","N/D")),
         "link":            APD_URL,
         "id": hashlib.md5(f"{doc.get('ige','')}-{doc.get('cargo','')}-{doc.get('descdistrito','')}".encode()).hexdigest(),
     }
@@ -373,10 +373,10 @@ def fmt_oferta(o, mostrar_btn_alerta=False, mostrar_btn_seguimiento=False):
     )
     botones = []
     if mostrar_btn_alerta:
-        ige = o.get("ige","")[:20]
+        ige = str(o.get("ige",""))[:20]
         botones.append([InlineKeyboardButton("🔔 Agregar a mis alertas", callback_data=f"alerta_add_{ige}")])
     if mostrar_btn_seguimiento:
-        ige = o.get("ige","")[:20]
+        ige = str(o.get("ige",""))[:20]
         botones.append([InlineKeyboardButton("📌 Seguir este cargo", callback_data=f"seg_add_{ige}")])
     markup = InlineKeyboardMarkup(botones) if botones else None
     return texto, markup
