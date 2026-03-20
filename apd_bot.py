@@ -165,13 +165,19 @@ def init_db():
         nivel TEXT DEFAULT 'Todos',
         distritos TEXT DEFAULT '',
         cargos TEXT DEFAULT '',
-        estados TEXT DEFAULT 'Publicadas',
+        estados TEXT DEFAULT 'publicada',
         activo INTEGER DEFAULT 1,
         creado_en TEXT DEFAULT CURRENT_TIMESTAMP)""")
-    # Migraciones para bases anteriores
-    for col, default in [("distritos","''"),("cargos","''"),("estados","'Publicadas'")]:
+    # Agregar columnas si no existen (bases antiguas)
+    for col, default in [("distritos","''"),("cargos","''"),("estados","'publicada'")]:
         try:
             c.execute(f"ALTER TABLE usuarios ADD COLUMN {col} TEXT DEFAULT {default}")
+        except:
+            pass
+    # Migrar valores viejos de estados
+    for viejo, nuevo in [("Publicadas","publicada"),("Tomadas","designada"),("Ambas","")]:
+        try:
+            c.execute("UPDATE usuarios SET estados=? WHERE estados=?", (nuevo, viejo))
         except:
             pass
     c.execute("""CREATE TABLE IF NOT EXISTS ofertas_vistas (
@@ -186,7 +192,7 @@ def get_user(chat_id):
     if row:
         return {"chat_id":row[0],"username":row[1],"nivel":row[2],
                 "distritos":row[3] or "","cargos":row[4] or "",
-                "estados":row[5] or "Publicadas","activo":row[6]}
+                "estados":row[5] or "publicada","activo":row[6]}
     return None
 
 def upsert_user(chat_id, username=None, **kwargs):
@@ -355,9 +361,9 @@ def coincide(o, nivel, distritos_list, cargos_list, estados_list):
         if not any(c.lower() == cargo_o for c in cargos_list):
             return False
 
-    # Estados: comparación directa con valor API
+    # Estados: comparación directa con valor API (insensible a mayúsculas)
     if estados_list:
-        if estado_o not in [e.lower() for e in estados_list]:
+        if estado_o not in [e.lower().strip() for e in estados_list]:
             return False
 
     return True
