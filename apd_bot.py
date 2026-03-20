@@ -12,23 +12,7 @@ from typing import Optional
 
 import ssl
 import requests
-from requests.adapters import HTTPAdapter
 from bs4 import BeautifulSoup
-
-class SSLAdapter(HTTPAdapter):
-    def init_poolmanager(self, *args, **kwargs):
-        ctx = ssl.create_default_context()
-        ctx.set_ciphers("DEFAULT@SECLEVEL=1")
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        kwargs["ssl_context"] = ctx
-        return super().init_poolmanager(*args, **kwargs)
-
-def get_session():
-    s = requests.Session()
-    s.mount("https://", SSLAdapter())
-    s.mount("http://", SSLAdapter())
-    return s
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler,
@@ -47,7 +31,8 @@ DB_PATH = "apd_bot.db"
 SCRAPE_INTERVAL_MINUTES = 5
 HORA_INICIO = time(5, 30)
 HORA_FIN    = time(11, 30)
-APD_URL     = "https://misservicios.abc.gob.ar/actos.publicos.digitales/"
+APD_URL     = "http://servicios.abc.gov.ar/actos.publicos.digitales/"
+APD_API     = "https://servicios3.abc.gob.ar/valoracion.docente/api/apd.oferta.encabezado/select"
 
 ELIGIENDO_NIVEL, ELIGIENDO_DISTRITO, ELIGIENDO_CARGO, ELIGIENDO_ESTADO = range(4)
 DIST_POR_PAGINA = 16
@@ -210,35 +195,35 @@ def build_estado_keyboard():
 # SCRAPER
 # ─────────────────────────────────────────────
 def scrape_ofertas():
-    headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"es-AR,es;q=0.9"}
+    """Consulta la API Solr pública del portal APD y devuelve todas las ofertas activas."""
+    params = {
+        "q": "*:*",
+        "rows": "500",
+        "sort": "finoferta desc",
+        "wt": "json",
+    }
     try:
-        session = get_session()
-        resp = session.get(APD_URL, headers=headers, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        return parse_html(soup)
+        resp = requests.get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = data.get("response", {}).get("docs", [])
+        ofertas = []
+        for doc in docs:
+            o = {
+                "ige":             doc.get("ige", "N/D"),
+                "nivel":           doc.get("descnivelmodalidad", "N/D"),
+                "cargo":           doc.get("cargo", "N/D"),
+                "distrito":        doc.get("descdistrito", "N/D"),
+                "establecimiento": doc.get("descestablecimiento", doc.get("clave", "N/D")),
+                "cierre":          doc.get("finoferta", "N/D"),
+                "estado":          doc.get("estado", "N/D"),
+                "link":            APD_URL,
+            }
+            o["id"] = hashlib.md5(f"{o['ige']}-{o['cargo']}-{o['distrito']}".encode()).hexdigest()
+            ofertas.append(o)
+        return ofertas
     except Exception as e:
         logger.error(f"Scrape error: {e}"); return []
-
-def parse_html(soup):
-    ofertas = []
-    tabla = soup.find("table")
-    if tabla:
-        for fila in tabla.find_all("tr")[1:]:
-            celdas = fila.find_all("td")
-            if len(celdas) >= 5:
-                o = {
-                    "ige": celdas[0].get_text(strip=True),
-                    "nivel": celdas[1].get_text(strip=True),
-                    "cargo": celdas[2].get_text(strip=True),
-                    "distrito": celdas[3].get_text(strip=True),
-                    "establecimiento": celdas[4].get_text(strip=True),
-                    "cierre": celdas[5].get_text(strip=True) if len(celdas)>5 else "",
-                    "estado": celdas[6].get_text(strip=True) if len(celdas)>6 else "Publicada",
-                    "link": APD_URL,
-                }
-                o["id"] = hashlib.md5(f"{o['ige']}-{o['cargo']}-{o['distrito']}".encode()).hexdigest()
-                ofertas.append(o)
-    return ofertas
 
 def coincide(o, nivel, distrito, cargo, estado_filtro):
     if nivel != "Todos" and nivel.lower() not in o.get("nivel","").lower():
@@ -433,43 +418,28 @@ async def reanudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
     try:
-        headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"es-AR,es;q=0.9"}
-        session = get_session()
-        resp = session.get(APD_URL, headers=headers, timeout=15)
-        codigo = resp.status_code
-        largo = len(resp.text)
-        soup = BeautifulSoup(resp.text, "html.parser")
-        ofertas = parse_html(soup)
-        tablas = len(soup.find_all("table"))
-        if ofertas:
-            muestra = ofertas[0]
+        params = {"q": "*:*", "rows": "5", "sort": "finoferta desc", "wt": "json"}
+        resp = requests.get(APD_API, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        docs = data.get("response", {}).get("docs", [])
+        total = data.get("response", {}).get("numFound", 0)
+        if docs:
+            muestra = docs[0]
             detalle = (
-                f"✅ *Portal respondió correctamente*\n\n"
-                f"📊 Código HTTP: `{codigo}`\n"
-                f"📄 Tamaño respuesta: `{largo} chars`\n"
-                f"🗂️ Tablas encontradas: `{tablas}`\n"
-                f"📋 Ofertas detectadas: `{len(ofertas)}`\n\n"
-                f"*Primera oferta:*\n"
+                f"✅ *API respondió correctamente*\n\n"
+                f"📊 Código HTTP: `{resp.status_code}`\n"
+                f"📋 Total ofertas en el sistema: `{total}`\n\n"
+                f"*Oferta más reciente:*\n"
                 f"IGE: `{muestra.get('ige','N/D')}`\n"
-                f"Nivel: {muestra.get('nivel','N/D')}\n"
+                f"Nivel: {muestra.get('descnivelmodalidad','N/D')}\n"
                 f"Cargo: {muestra.get('cargo','N/D')}\n"
-                f"Distrito: {muestra.get('distrito','N/D')}\n"
+                f"Distrito: {muestra.get('descdistrito','N/D')}\n"
                 f"Estado: {muestra.get('estado','N/D')}\n"
-                f"Cierre: {muestra.get('cierre','N/D')}"
+                f"Cierre: {muestra.get('finoferta','N/D')}"
             )
         else:
-            detalle = (
-                f"⚠️ *Portal respondió pero sin ofertas en tabla*\n\n"
-                f"📊 Código HTTP: `{codigo}`\n"
-                f"📄 Tamaño respuesta: `{largo} chars`\n"
-                f"🗂️ Tablas encontradas: `{tablas}`\n\n"
-                f"Puede ser porque:\n"
-                f"• No hay ofertas publicadas en este momento\n"
-                f"• El portal usa JavaScript para cargar los datos\n"
-                f"• La estructura HTML es diferente a la esperada\n\n"
-                f"Primeras 300 letras del HTML recibido:\n"
-                f"`{resp.text[:300].strip()}`"
-            )
+            detalle = f"⚠️ API respondió pero sin ofertas. Total: `{total}`"
     except Exception as e:
         detalle = f"❌ *Error al conectar con el portal*\n\n`{str(e)}`"
     await update.message.reply_text(detalle, parse_mode="Markdown")
