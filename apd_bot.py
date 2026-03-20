@@ -274,25 +274,44 @@ def scrape_ofertas():
         logger.error(f"Scrape error: {e}"); return []
 
 def coincide(o, nivel, distritos_list, cargos_list, estados_list):
+    nivel_o    = o.get("nivel","").lower()
+    distrito_o = o.get("distrito","").lower()
+    cargo_o    = o.get("cargo","").lower()
+    estado_o   = o.get("estado","").lower()
+
     # Nivel
-    if nivel != "Todos" and nivel.lower() not in o.get("nivel","").lower():
+    if nivel != "Todos" and nivel.lower() not in nivel_o:
         return False
-    # Distritos: si hay lista, la oferta debe coincidir con alguno
+
+    # Distritos: al menos uno debe estar contenido en el distrito de la oferta
     if distritos_list:
-        if not any(d.lower() in o.get("distrito","").lower() for d in distritos_list):
+        if not any(d.lower() in distrito_o for d in distritos_list):
             return False
-    # Cargos: si hay lista, la oferta debe coincidir con alguno
+
+    # Cargos: al menos uno debe estar contenido en el cargo de la oferta
+    # También chequeamos al revés: que el cargo de la oferta contenga alguna
+    # palabra clave del filtro (ej: "maestro de grado" está en "MAESTRO DE GRADO (/MG)")
     if cargos_list:
-        if not any(c.lower() in o.get("cargo","").lower() for c in cargos_list):
+        def cargo_coincide(filtro, oferta):
+            f = filtro.lower()
+            # el filtro está dentro de la oferta
+            if f in oferta: return True
+            # o la oferta está dentro del filtro (para filtros más específicos)
+            if oferta in f: return True
+            # o comparten al menos 2 palabras significativas
+            palabras = [p for p in f.split() if len(p) > 3]
+            return any(p in oferta for p in palabras)
+        if not any(cargo_coincide(c, cargo_o) for c in cargos_list):
             return False
-    # Estados: si hay lista, filtrar; si está vacía = ambos
+
+    # Estados: si hay lista, al menos uno debe coincidir
     if estados_list:
-        estado_o = o.get("estado","").lower()
         match = False
         for e in estados_list:
             if e == "Publicadas" and "publicad" in estado_o: match = True
             if e == "Tomadas"    and "tomad"    in estado_o: match = True
         if not match: return False
+
     return True
 
 def fmt_oferta(o):
