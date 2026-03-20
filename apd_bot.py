@@ -66,7 +66,7 @@ DISTRITOS = [
 ]
 
 CARGOS_COMUNES = [
-    "Maestro de grado","Maestro de jardín","Secretario","Director",
+    "Maestro de grado","MG5 - Maestra grado 5ta hora","Maestro de jardín","Secretario","Director",
     "Matemática","Lengua","Historia","Geografía",
     "Inglés","Educación Física","Música","Plástica",
     "Física","Química","Biología","Filosofía",
@@ -412,6 +412,49 @@ async def reanudar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upsert_user(chat_id=update.effective_user.id, activo=1)
     await update.message.reply_text("✅ Reactivado. ¡Te sigo avisando!")
 
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 Consultando el portal APD ahora mismo...")
+    try:
+        headers = {"User-Agent":"Mozilla/5.0","Accept-Language":"es-AR,es;q=0.9"}
+        resp = requests.get(APD_URL, headers=headers, timeout=15, verify=False)
+        codigo = resp.status_code
+        largo = len(resp.text)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        ofertas = parse_html(soup)
+        tablas = len(soup.find_all("table"))
+        if ofertas:
+            muestra = ofertas[0]
+            detalle = (
+                f"✅ *Portal respondió correctamente*\n\n"
+                f"📊 Código HTTP: `{codigo}`\n"
+                f"📄 Tamaño respuesta: `{largo} chars`\n"
+                f"🗂️ Tablas encontradas: `{tablas}`\n"
+                f"📋 Ofertas detectadas: `{len(ofertas)}`\n\n"
+                f"*Primera oferta:*\n"
+                f"IGE: `{muestra.get('ige','N/D')}`\n"
+                f"Nivel: {muestra.get('nivel','N/D')}\n"
+                f"Cargo: {muestra.get('cargo','N/D')}\n"
+                f"Distrito: {muestra.get('distrito','N/D')}\n"
+                f"Estado: {muestra.get('estado','N/D')}\n"
+                f"Cierre: {muestra.get('cierre','N/D')}"
+            )
+        else:
+            detalle = (
+                f"⚠️ *Portal respondió pero sin ofertas en tabla*\n\n"
+                f"📊 Código HTTP: `{codigo}`\n"
+                f"📄 Tamaño respuesta: `{largo} chars`\n"
+                f"🗂️ Tablas encontradas: `{tablas}`\n\n"
+                f"Puede ser porque:\n"
+                f"• No hay ofertas publicadas en este momento\n"
+                f"• El portal usa JavaScript para cargar los datos\n"
+                f"• La estructura HTML es diferente a la esperada\n\n"
+                f"Primeras 300 letras del HTML recibido:\n"
+                f"`{resp.text[:300].strip()}`"
+            )
+    except Exception as e:
+        detalle = f"❌ *Error al conectar con el portal*\n\n`{str(e)}`"
+    await update.message.reply_text(detalle, parse_mode="Markdown")
+
 async def ayuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "ℹ️ *¿Cómo funciona?*\n\n"
@@ -433,6 +476,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", test))
     app.add_handler(CommandHandler("mis_alertas", mis_alertas))
     app.add_handler(CommandHandler("pausar", pausar))
     app.add_handler(CommandHandler("reanudar", reanudar))
