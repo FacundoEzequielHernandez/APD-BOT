@@ -218,12 +218,20 @@ def get_seguimientos(chat_id):
 def add_seguimiento(chat_id, ige, cargo, distrito, nivel, estado):
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute("INSERT OR IGNORE INTO seguimiento (chat_id,ige,cargo,distrito,nivel,estado_ultimo) VALUES (?,?,?,?,?,?)",
-                     (chat_id, ige, cargo, distrito, nivel, estado))
+        # Verificar si ya existe
+        existe = conn.execute(
+            "SELECT 1 FROM seguimiento WHERE chat_id=? AND ige=?", (chat_id, ige)
+        ).fetchone()
+        if existe:
+            conn.close(); return False
+        conn.execute(
+            "INSERT INTO seguimiento (chat_id,ige,cargo,distrito,nivel,estado_ultimo) VALUES (?,?,?,?,?,?)",
+            (chat_id, str(ige), str(cargo), str(distrito), str(nivel), str(estado)))
         conn.commit()
-        result = True
-    except: result = False
-    conn.close(); return result
+        conn.close(); return True
+    except Exception as e:
+        logger.error(f"add_seguimiento error: {e}")
+        conn.close(); return None  # None = error real
 
 def remove_seguimiento(chat_id, ige):
     conn = sqlite3.connect(DB_PATH)
@@ -654,28 +662,44 @@ async def alerta_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # ── Seguimiento desde explorar ─────────────────────────────────────────────────
 async def seg_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
+    q = update.callback_query
+    await q.answer("Procesando...")
     ige = q.data.replace("seg_add_","")
     try:
-        data = consultar_api([f'ige:"{ige}"'], rows=1, sort="finoferta desc")
-        docs = data.get("response",{}).get("docs",[])
+        # Primero asegurar que la tabla existe
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("""CREATE TABLE IF NOT EXISTS seguimiento (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER, ige TEXT, cargo TEXT, distrito TEXT, nivel TEXT,
+            estado_ultimo TEXT, creado_en TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(chat_id, ige))""")
+        conn.commit(); conn.close()
+
+        data  = consultar_api([f'ige:"{ige}"'], rows=1, sort="finoferta desc")
+        docs  = data.get("response",{}).get("docs",[])
         if not docs:
-            await q.message.reply_text("No se encontró la oferta."); return
+            await q.message.reply_text(f"⚠️ No se encontró la oferta IGE {ige} en la API."); return
         doc    = docs[0]
-        cargo  = doc.get("cargo","")
-        dist   = doc.get("descdistrito","")
-        nivel  = doc.get("descnivelmodalidad","")
-        estado = doc.get("estado","").lower()
+        cargo  = str(doc.get("cargo",""))
+        dist   = str(doc.get("descdistrito",""))
+        nivel  = str(doc.get("descnivelmodalidad",""))
+        estado = str(doc.get("estado","")).lower()
         ok = add_seguimiento(q.from_user.id, ige, cargo, dist, nivel, estado)
-        if ok:
+        if ok is True:
             await q.message.reply_text(
-                f"📌 Seguimiento activado para IGE `{ige}`\n"
-                f"📝 {cargo}\n📍 {dist}\n"
-                f"Te avisaré si cambia el estado.",
-                parse_mode="Markdown")
+                f"📌 *Seguimiento activado\\!*\n\n"
+                f"IGE: `{ige}`\n"
+                f"📝 {cargo}\n"
+                f"📍 {dist}\n"
+                f"Estado actual: {estado}\n\n"
+                f"Te voy a avisar si cambia el estado\\.",
+                parse_mode="MarkdownV2")
+        elif ok is False:
+            await q.message.reply_text(f"Ya estás siguiendo el IGE `{ige}`\\.", parse_mode="MarkdownV2")
         else:
-            await q.message.reply_text(f"Ya estás siguiendo el IGE `{ige}`.", parse_mode="Markdown")
+            await q.message.reply_text(f"❌ Error al guardar el seguimiento\\. Intentá de nuevo\\.", parse_mode="MarkdownV2")
     except Exception as e:
+        logger.error(f"seg_add_callback error: {e}")
         await q.message.reply_text(f"❌ Error: `{e}`", parse_mode="Markdown")
 
 # ── Mis alertas ────────────────────────────────────────────────────────────────
@@ -941,8 +965,8 @@ def main():
     # Agregar alerta desde explorar
     app.add_handler(CallbackQueryHandler(alerta_add_callback,   pattern="^alerta_add_"))
     # Seguimiento
-    app.add_handler(CallbackQueryHandler(seguimiento_callback,  pattern="^seg_"))
     app.add_handler(CallbackQueryHandler(seg_add_callback,      pattern="^seg_add_"))
+    app.add_handler(CallbackQueryHandler(seguimiento_callback,  pattern="^seg_"))
     # Acerca
     app.add_handler(CallbackQueryHandler(acerca_callback,       pattern="^acerca_volver$"))
     # Texto libre (cargo personalizado)
