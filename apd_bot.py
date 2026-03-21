@@ -627,7 +627,7 @@ async def alerta_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     q = update.callback_query; await q.answer()
     ige = q.data.replace("alerta_add_","")
     try:
-        data = consultar_api([f'ige:"{ige}"'], rows=1)
+        data = consultar_api([f'ige:"{ige}"'], rows=1, sort="finoferta desc")
         docs = data.get("response",{}).get("docs",[])
         if not docs:
             await q.message.reply_text("No se encontró la oferta."); return
@@ -640,14 +640,14 @@ async def alerta_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         d = get_user(q.from_user.id)
         dl = csv_to_list(d["distritos"]) if d else []
         cl = csv_to_list(d["cargos"])    if d else []
-        el = csv_to_list(d["estados"])   if d else []
+        el = csv_to_list(d["estados"])   if d else ["publicada"]
         if dist  not in dl: dl.append(dist)
         if cargo not in cl: cl.append(cargo)
-        if estado not in el: el.append(estado)
+        if not el: el = ["publicada"]
         upsert_user(q.from_user.id, nivel=nivel_key,
                     distritos=list_to_csv(dl), cargos=list_to_csv(cl), estados=list_to_csv(el))
         await q.message.reply_text(
-            f"✅ Alerta agregada para:\n📝 {cargo}\n📍 {dist}\n🔖 {estado}",
+            f"✅ Alerta agregada para:\n📝 {cargo}\n📍 {dist}\n🔖 publicada (disponible)",
             parse_mode="Markdown")
     except Exception as e:
         await q.message.reply_text(f"❌ Error: `{e}`", parse_mode="Markdown")
@@ -657,7 +657,7 @@ async def seg_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     ige = q.data.replace("seg_add_","")
     try:
-        data = consultar_api([f'ige:"{ige}"'], rows=1)
+        data = consultar_api([f'ige:"{ige}"'], rows=1, sort="finoferta desc")
         docs = data.get("response",{}).get("docs",[])
         if not docs:
             await q.message.reply_text("No se encontró la oferta."); return
