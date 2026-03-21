@@ -354,12 +354,23 @@ def consultar_api(fq, rows=100, sort="finoferta asc"):
     return resp.json()
 
 def doc_to_oferta(doc):
+    # Horario: los campos vienen como "lunes","martes", etc.
+    dias = ["lunes","martes","miercoles","jueves","viernes","sabado","domingo"]
+    horario_parts = []
+    for dia in dias:
+        val = doc.get(dia)
+        if val:
+            horario_parts.append(f"{dia.capitalize()}: {val}")
     return {
         "ige":             str(doc.get("ige","N/D")),
         "nivel":           str(doc.get("descnivelmodalidad","N/D")),
         "cargo":           str(doc.get("cargo","N/D")),
         "distrito":        str(doc.get("descdistrito","N/D")),
-        "establecimiento": str(doc.get("descestablecimiento", doc.get("clave","N/D"))),
+        "clave":           str(doc.get("clave","N/D")),
+        "establecimiento": str(doc.get("descestablecimiento","N/D")),
+        "turno":           str(doc.get("turno","")),
+        "jornada":         str(doc.get("jornada","")),
+        "horario":         " | ".join(horario_parts) if horario_parts else "",
         "cierre":          formatear_fecha(str(doc.get("finoferta","N/D"))),
         "estado":          str(doc.get("estado","N/D")),
         "link":            APD_URL,
@@ -368,13 +379,19 @@ def doc_to_oferta(doc):
 
 def fmt_oferta(o, mostrar_btn_alerta=False, mostrar_btn_seguimiento=False):
     estado_emoji = "🟢" if "publicad" in o.get("estado","").lower() else "🔴"
+    turno   = o.get("turno","")
+    jornada = o.get("jornada","")
+    horario = o.get("horario","")
+    turno_str   = f"\n⏱️ Turno/Jornada: {turno} - {jornada}" if turno or jornada else ""
+    horario_str = f"\n🕐 Horario: {horario}"                  if horario             else ""
     texto = (
         f"📚 *OFERTA APD*\n━━━━━━━━━━━━━━━\n"
         f"📋 IGE: `{o.get('ige','N/D')}`\n"
         f"🏫 Nivel: {o.get('nivel','N/D')}\n"
         f"📝 Cargo: {o.get('cargo','N/D')}\n"
         f"📍 Distrito: {o.get('distrito','N/D')}\n"
-        f"🏛️ Est.: {o.get('establecimiento','N/D')}\n"
+        f"🏛️ Establecimiento: {o.get('clave','N/D')}"
+        f"{turno_str}{horario_str}\n"
         f"⏰ Cierre: *{o.get('cierre','N/D')}*\n"
         f"{estado_emoji} Estado: {o.get('estado','N/D')}\n"
         f"━━━━━━━━━━━━━━━"
@@ -446,9 +463,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = update.effective_user
     upsert_user(chat_id=u.id, username=u.username or u.first_name)
     await update.message.reply_text(
-        f"👋 Hola, *{u.first_name}*\\! Bienvenido al bot de *Alertas APD*\\.\n\n"
+        f"👋 Hola, *{u.first_name}*\! Bienvenido al bot de *Alertas APD*\.\n\n"
         "¿Qué querés hacer?",
-        parse_mode="MarkdownV2",
+        parse_mode="Markdown",
         reply_markup=menu_principal())
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -687,17 +704,17 @@ async def seg_add_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok = add_seguimiento(q.from_user.id, ige, cargo, dist, nivel, estado)
         if ok is True:
             await q.message.reply_text(
-                f"📌 *Seguimiento activado\\!*\n\n"
+                f"📌 *Seguimiento activado\!*\n\n"
                 f"IGE: `{ige}`\n"
                 f"📝 {cargo}\n"
                 f"📍 {dist}\n"
                 f"Estado actual: {estado}\n\n"
-                f"Te voy a avisar si cambia el estado\\.",
-                parse_mode="MarkdownV2")
+                f"Te voy a avisar si cambia el estado\.",
+                parse_mode="Markdown")
         elif ok is False:
-            await q.message.reply_text(f"Ya estás siguiendo el IGE `{ige}`\\.", parse_mode="MarkdownV2")
+            await q.message.reply_text(f"Ya estás siguiendo el IGE `{ige}`\.", parse_mode="Markdown")
         else:
-            await q.message.reply_text(f"❌ Error al guardar el seguimiento\\. Intentá de nuevo\\.", parse_mode="MarkdownV2")
+            await q.message.reply_text(f"❌ Error al guardar el seguimiento\. Intentá de nuevo\.", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"seg_add_callback error: {e}")
         await q.message.reply_text(f"❌ Error: `{e}`", parse_mode="Markdown")
@@ -899,13 +916,13 @@ async def configurar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             nivel=nivel, distritos=list_to_csv(distritos),
             cargos=list_to_csv(cargos), estados=list_to_csv(estados), activo=1)
         await q.edit_message_text(
-            f"✅ *Alertas configuradas\\!*\n\n"
+            f"✅ *Alertas configuradas\!*\n\n"
             f"🏫 Nivel: {nivel}\n"
             f"📍 Distritos: {', '.join(distritos) if distritos else 'Todos'}\n"
             f"📝 Cargos: {', '.join(cargos) if cargos else 'Todos'}\n"
             f"🔖 Estados: {', '.join(ESTADOS_DISPLAY.get(e,e) for e in estados) if estados else 'Todos'}\n\n"
             "¿Qué querés hacer?",
-            parse_mode="MarkdownV2", reply_markup=menu_principal())
+            parse_mode="Markdown", reply_markup=menu_principal())
 
     elif data == "cfg_volver":
         await q.edit_message_text("¿Qué querés hacer?", reply_markup=menu_principal())
@@ -928,17 +945,17 @@ async def _mostrar_acerca(q):
         "💙 *Acerca de este bot*\n\n"
         "Este bot fue creado por un chico con pocos conocimientos de informática "
         "para su novia maestra, que siempre está buscando laburo y que merece "
-        "enterarse de las ofertas docentes antes que nadie\\.\n\n"
+        "enterarse de las ofertas docentes antes que nadie\.\n\n"
         "Lo hice entendiendo que los cargos docentes a veces se manejan mal, "
         "que los tiempos son cortos y que la realidad de los docentes no está "
-        "para andar pagando servicios innecesarios\\.\n\n"
-        "Este bot es y va a seguir siendo *completamente gratuito*\\.\n\n"
+        "para andar pagando servicios innecesarios\.\n\n"
+        "Este bot es y va a seguir siendo *completamente gratuito*\.\n\n"
         "📬 *¿Tenés sugerencias o encontraste un error?*\n"
-        "Escribinos a tbotapd@gmail\\.com\n\n"
+        "Escribinos a tbotapd@gmail\.com\n\n"
         "☕ *¿Querés colaborar para mantener el servidor?*\n"
         "Podés hacerlo al alias: *apdbot*\n\n"
-        "_Gracias por usar el bot\\. Ojalá le sirva a muchos docentes_ 🍎",
-        parse_mode="MarkdownV2",
+        "_Gracias por usar el bot\. Ojalá le sirva a muchos docentes_ 🍎",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("« Volver al menú", callback_data="acerca_volver")
         ]]))
